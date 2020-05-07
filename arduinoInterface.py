@@ -4,7 +4,7 @@ import time
 import os.path
 
 def readSerial():
-    val = str(ser.readline().decode().strip('\r\n'))#Capture serial output as a decoded string
+    val = str(ser.readline().decode().strip('\r\n')) #Capture serial output as a decoded string
     print(val)
     try:
         intVal = int(val)
@@ -12,9 +12,16 @@ def readSerial():
         intVal = 0
     return intVal
 
-#ser = serial.Serial('COM6', 9600)
+ser = serial.Serial('COM6', 9600)
 
-romFile = open('Assembly\\rom.bin', 'rb')
+validPath = False
+while validPath == False:
+    path = input("Please enter a valid binary name (without .bin): ")
+    path = "Binaries/" + path + ".bin"
+    if os.path.exists(path):
+        validPath = True
+
+romFile = open(path, 'rb')
 rom = bytearray(romFile.read())
 
 consecutiveEA = 0
