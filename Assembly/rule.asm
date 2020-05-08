@@ -5,7 +5,7 @@ DDRB  = VIA + 2
 DDRA  = VIA + 3
 
 RULE_ARRAY = $00        ;Addresses 0x00 to 0x07 will be used to store the rule
-GEN_STATE  = $08        ;This address is used to store 
+GEN_STATE  = $08        ;This address is used to store the generation state during computations
 
 RULEVAL    = 110        ;Parameter of this program: the rule used (most common are 30, 90, 110, 184)
 INIGEN     = %00000001  ;Parameter of this program: the initial state of the 8 bits
