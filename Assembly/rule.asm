@@ -1,21 +1,21 @@
-VIA     = $6000
-PORTB   = VIA
-PORTA   = VIA + 1
-DDRB    = VIA + 2
-DDRA    = VIA + 3
+VIA   = $6000
+PORTB = VIA
+PORTA = VIA + 1
+DDRB  = VIA + 2
+DDRA  = VIA + 3
 
 RULE_ARRAY = $00        ;Addresses 0x00 to 0x07 will be used to store the rule
 GEN_STATE  = $08        ;This address is used to store 
 
-RULE_VAL     = 110      ;Parameter of this program: the rule used (most common are 30, 90, 110, 184)
-FIRSTGEN_VAL = %00000010;Parameter of this program: the initial state of the 8 bits
+RULEVAL    = 110        ;Parameter of this program: the rule used (most common are 30, 90, 110, 184)
+INIGEN     = %00000010  ;Parameter of this program: the initial state of the 8 bits
 
         .org $8000
 
 reset:  ldx #$ff
         txs             ;Initialize stack pointer to address 01ff
 
-        lda RULE_VAL    ;Load the rule value
+        lda #RULEVAL    ;Load the rule value
         rol             ;Rotate A left, the carry doesn't matter for this first rotate
         ldx #7          ;Load DECIMAL 7 to do 8 loop iterations
 rule_ini:
@@ -28,7 +28,7 @@ rule_ini:
         bpl rule_ini    ;Is X still positive? Yes? Continue rule initialization
 
         clc             ;Clear carry for initial rotate
-        sta FIRSTGEN_VAL;Initialize A with the first generation value
+        lda #INIGEN     ;Initialize A with the first generation value
 
 nextgen:
         ldy #15         ;Load DECIMAL 15 to do 8 loop iterations
