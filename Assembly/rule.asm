@@ -23,7 +23,7 @@ rule_ini:
         tay             ;Save the rotated rule value in Y
         and #%00000001  ;Keep only bit 0
         sta RULE_ARRAY,X;Store this rule to RULE_ARRAY[X]
-        tay             ;Get the rotated rule value back from Y
+        tya             ;Get the rotated rule value back from Y
         dex             ;Decrement X
         bpl rule_ini    ;Is X still positive? Yes? Continue rule initialization
 
