@@ -8,7 +8,7 @@ RULE_ARRAY = $00        ;Addresses 0x00 to 0x07 will be used to store the rule
 GEN_STATE  = $08        ;This address is used to store 
 
 RULEVAL    = 110        ;Parameter of this program: the rule used (most common are 30, 90, 110, 184)
-INIGEN     = %00000010  ;Parameter of this program: the initial state of the 8 bits
+INIGEN     = %00000001  ;Parameter of this program: the initial state of the 8 bits
 
         .org $8000
 
@@ -27,8 +27,8 @@ rule_ini:
         dex             ;Decrement X
         bpl rule_ini    ;Is X still positive? Yes? Continue rule initialization
 
-        clc             ;Clear carry for initial rotate
         lda #INIGEN     ;Initialize A with the first generation value
+        asl             ;Shift A left
 
 nextgen:
         ldy #15         ;Load DECIMAL 15 to do 8 loop iterations
