@@ -14,6 +14,7 @@ INIGEN     = %00000001  ;Parameter of this program: the initial state of the 8 b
 
 reset:  ldx #$ff
         txs             ;Initialize stack pointer to address 01ff
+        stx DDRB        ;Initialize Port B to full output
 
         lda #RULEVAL    ;Load the rule value
         rol             ;Rotate A left, the carry doesn't matter for this first rotate
