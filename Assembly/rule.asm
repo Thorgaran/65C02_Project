@@ -17,12 +17,15 @@ reset:  ldx #$ff
         stx DDRB        ;Initialize Port B to full output
 
         lda #RULEVAL    ;Load the rule value
+        sta PORTB       ;Print A
         rol             ;Rotate A left, the carry doesn't matter for this first rotate
         ldx #7          ;Load DECIMAL 7 to do 8 loop iterations
 rule_ini:
         rol             ;Rotate A left
+        sta PORTB       ;Print A
         tay             ;Save the rotated rule value in Y
         and #%00000001  ;Keep only bit 0
+        sta PORTB       ;Print A
         sta RULE_ARRAY,X;Store this rule to RULE_ARRAY[X]
         tya             ;Get the rotated rule value back from Y
         dex             ;Decrement X
