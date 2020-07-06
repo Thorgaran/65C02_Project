@@ -206,12 +206,13 @@ void writeFromSerial (unsigned int mini, unsigned int maxi){
       delay(1);
     }
     Serial.readBytes(&data, 1);
+    Serial.println(data);
     writeOneEEPROMAddress(addr, data);
   }
 }
 
-int readAddrFromSerial () {
-  int addr;
+unsigned int readAddrFromSerial () {
+  unsigned int addr;
   byte buffer;
   while (Serial.available() == 0) {
     delay(1);
@@ -266,6 +267,7 @@ void setup() {
   //writeConsecutiveEEPROMAddress(8, programme, 10);
   //writeOneEEPROMAddress(0x7fff,0xea);
   writeFromSerial(0, newCodeLength);
+  Serial.println("First half worked");
   writeFromSerial(0x7ffa, 0x8000);
   if (oldCodeLength > newCodeLength) {
     writeEaEverywhere(newCodeLength, oldCodeLength);

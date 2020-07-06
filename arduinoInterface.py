@@ -51,14 +51,17 @@ for i in range(codeLength):
     print("rom[" + str(i) + "]: " + str(rom[i]))
     romInt = struct.pack('>B', rom[i])
     ser.write(romInt)
+    readSerial()
 print("...")
+readSerial() #First half worked
 for i in range(0x7ffa, 0x8000):
     print("rom[" + str(i) + "]: " + str(rom[i]))
     romInt = struct.pack('>B', rom[i])
     ser.write(romInt)
+    readSerial()
 
 print("")
-readSerial()
+readSerial() #Wrote some EAs! OR Longer code, nothing to write... 
 print("")
 
 minPrintInt = struct.pack('>h', 0)
@@ -68,7 +71,7 @@ ser.write(maxPrintInt)
 
 readSerial() #*******PRINT EEPROM CONTENT*******
 
-for i in range(((max(oldCodeLength, codeLength) - 1) // 16) + 1):
+for i in range((max(oldCodeLength, codeLength) // 16) + 1):
     readSerial()
 print("...")
 readSerial() #8ff0:
