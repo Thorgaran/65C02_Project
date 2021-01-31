@@ -22,6 +22,7 @@ impl Default for UIChannels {
 struct UIData {
     bin_name: String,
     cur_wait_time: usize,
+    cpu_running: bool,
 }
 
 #[derive(Default, NwgUi)]
@@ -85,6 +86,10 @@ pub struct EmulatorGui {
     #[nwg_layout_item(layout: grid, row: 5, col: 0, col_span: 4)]
     #[nwg_events( OnButtonClick: [EmulatorGui::send_show_log] )]
     show_log_cbox: nwg::CheckBox,
+
+    #[nwg_control(text: "Cycles: 0")]
+    #[nwg_layout_item(layout: grid, row: 5, col: 4, col_span: 2)]
+    cycle_count_lbl: nwg::Label,
 
     #[nwg_control()]
     #[nwg_layout_item(layout: grid, row: 0, col: 6, row_span: 6, col_span: 6)]
@@ -194,7 +199,7 @@ pub struct EmulatorGui {
 
 impl EmulatorGui {
     fn init(&self) {
-        self.bin_name_lbl.set_text(&format!("Executing file: {}.bin", self.data.borrow().bin_name));
+        self.bin_name_lbl.set_text(&format!("Executing file: {}", self.data.borrow().bin_name));
         
         // The trackbar values cannot be set when it is created, according to the winapi docs,
         // so they are set in this init function
@@ -207,12 +212,31 @@ impl EmulatorGui {
     }
 
     fn exit(&self) {
+        if self.data.borrow().cpu_running {
+            self.send_gui_msg(GuiMessage::Exit);
+        }
         nwg::stop_thread_dispatch();
+    }
+
+    fn disable_window(&self) {
+        if self.data.borrow().cpu_running {
+            self.refresh_timer.stop();
+            self.data.borrow_mut().cpu_running = false;
+            self.run_rbutton.set_enabled(false);
+            self.stop_rbutton.set_enabled(false);
+            self.step_button.set_enabled(false);
+            self.wait_time_button.set_enabled(false);
+            self.step_wait_time_tb.set_enabled(false);
+            self.show_log_cbox.set_enabled(false);
+            nwg::modal_info_message(&self.window, "CPU stopped", 
+                "The CPU is done executing the program.\nClose the main window to exit."
+            );
+        }
     }
 
     fn update_cpu_data(&self) {
         loop { match self.channels.rx.try_recv() {
-            Err(TryRecvError::Disconnected) => panic!("Processor thread has hung up"),
+            Err(TryRecvError::Disconnected) => panic!("CPU thread has hung up"),
             Err(TryRecvError::Empty) => break,
             Ok(msg) => match msg {
                 CpuMessage::PortB(mut port_b_data) => {
@@ -263,22 +287,28 @@ impl EmulatorGui {
                     self.led1a.set_bitmap(bitmaps.pop().unwrap());
                     self.led0a.set_bitmap(bitmaps.pop().unwrap());
                 },
+                CpuMessage::CycleCount(cycle_count) => self.cycle_count_lbl
+                        .set_text(&format!("Cycles: {}", cycle_count)),
+                CpuMessage::Stopped => {
+                    self.disable_window();
+                    break
+                },
             },
         }};
     }
 
     fn send_run(&self) {
         self.step_button.set_enabled(false);
-        self.channels.tx.send(GuiMessage::Run).expect("Processor thread has hung up");
+        self.send_gui_msg(GuiMessage::Run);
     }
 
     fn send_stop(&self) {
         self.step_button.set_enabled(true);
-        self.channels.tx.send(GuiMessage::Stop).expect("Processor thread has hung up");
+        self.send_gui_msg(GuiMessage::Stop);
     }
 
     fn send_step(&self) {
-        self.channels.tx.send(GuiMessage::Step).expect("Processor thread has hung up");
+        self.send_gui_msg(GuiMessage::Step);
     }
 
     fn update_step_wait_time_lbl(&self, cur: usize, sel: usize) {
@@ -303,16 +333,19 @@ impl EmulatorGui {
         self.update_step_wait_time_lbl(new_wait_time, new_wait_time);
         self.wait_time_button.set_enabled(false);
 
-        self.channels.tx.send(GuiMessage::ChangeWaitTime(new_wait_time))
-            .expect("Processor thread has hung up");
+        self.send_gui_msg(GuiMessage::ChangeWaitTime(new_wait_time));
     }
 
     fn send_show_log(&self) {
-        self.channels.tx.send(GuiMessage::ShowLog(match self.show_log_cbox.check_state() {
+        self.send_gui_msg(GuiMessage::ShowLog(match self.show_log_cbox.check_state() {
             nwg::CheckBoxState::Checked => true,
             nwg::CheckBoxState::Unchecked => false,
             nwg::CheckBoxState::Indeterminate => panic!("CheckBox in indeterminate state"),
-        })).expect("Processor thread has hung up");
+        }));
+    }
+
+    fn send_gui_msg(&self, msg: GuiMessage) {
+        self.channels.tx.send(msg).expect("CPU thread has hung up");
     }
 }
 
@@ -325,6 +358,7 @@ pub fn run(
     let data = RefCell::new(UIData { 
         bin_name, 
         cur_wait_time: DEFAULT_STEP_WAIT,
+        cpu_running: true,
     });
 
     nwg::init().expect("Failed to init Native Windows GUI");

@@ -9,6 +9,7 @@ pub struct PhysSystem {
     mem: [u8; 65536],
     via: W65C22S,
     step_wait_time: usize,
+    cycle_count: usize,
     step_count: usize,
     show_log: bool,
     log_file: Option<File>,
@@ -33,6 +34,7 @@ impl PhysSystem {
             mem,
             via: W65C22S::new(),
             step_wait_time: DEFAULT_STEP_WAIT,
+            cycle_count: 0,
             step_count: 0,
             show_log: false,
             log_file,
@@ -41,38 +43,47 @@ impl PhysSystem {
         }
     }
 
-    pub fn run(mut self) {
+    pub fn run(mut self) -> thread::JoinHandle<()> {
         let mut cpu = W65C02S::new();
-        thread::spawn(move || {
-            loop {
+        thread::Builder::new().name("CPU thread".to_string()).spawn(move || {
+            'cpu_thread_main: loop {
                 match self.rx.recv().expect("GUI thread has hung up") {
-                    GuiMessage::Run => loop {
+                    GuiMessage::Run => 'run: loop {
                         match self.rx.try_recv() {
                             Err(TryRecvError::Disconnected) => panic!("GUI thread has hung up"),
-                            Ok(GuiMessage::Stop) => break,
+                            Ok(GuiMessage::Stop) => break 'run,
                             Ok(GuiMessage::ChangeWaitTime(new_wait_time)) => self.step_wait_time = new_wait_time,
                             Ok(GuiMessage::ShowLog(show_log)) => self.show_log = show_log,
+                            Ok(GuiMessage::Exit) => break 'cpu_thread_main,
                             // If there are no messages or the message is "step" or "run", continue running
                             _ => {},
                         }
                         if self.step(&mut cpu) == State::Stopped {
-                            break;
+                            break 'cpu_thread_main;
                         }
                         thread::sleep(time::Duration::from_millis(self.step_wait_time as u64));
                     },
                     GuiMessage::Step => if self.step(&mut cpu) == State::Stopped {
-                        break;
+                        break 'cpu_thread_main;
                     },
                     GuiMessage::ChangeWaitTime(new_wait_time) => self.step_wait_time = new_wait_time,
                     GuiMessage::ShowLog(show_log) => self.show_log = show_log,
+                    GuiMessage::Exit => break 'cpu_thread_main,
                     _ => {},
                 }
-            }
-            panic!("CPU STOPPED");
-        });
+            };
+            log(&mut self.log_file, &self.show_log, format!(
+                "\n\nTotal cycle count: {}", 
+                self.cycle_count
+            ));
+            send_cpu_msg(&self.tx, CpuMessage::CycleCount(self.cycle_count));
+            send_cpu_msg(&self.tx, CpuMessage::Stopped);
+            thread::sleep(time::Duration::from_millis(500));
+        }).unwrap()
     }
 
     fn step(&mut self, cpu: &mut W65C02S) -> State {
+        send_cpu_msg(&self.tx, CpuMessage::CycleCount(self.cycle_count));
         log(&mut self.log_file, &self.show_log, format!("\nStep {}:", self.step_count));
         self.step_count += 1;
         cpu.step(self)
@@ -81,6 +92,7 @@ impl PhysSystem {
 
 impl System for PhysSystem {
     fn read(&mut self, _cpu: &mut W65C02S, addr: u16) -> u8 {
+        self.cycle_count += 1;
         self.via.clock_pulse();
         let value = match addr {
             // read from RAM
@@ -103,6 +115,7 @@ impl System for PhysSystem {
     }
 
     fn write(&mut self, _cpu: &mut W65C02S, addr: u16, value: u8) {
+        self.cycle_count += 1;
         self.via.clock_pulse();
         log(&mut self.log_file, &self.show_log, format!("\n    WRITE {:02x} to {:04x}", value, addr));
         match addr {
