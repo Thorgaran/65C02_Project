@@ -1,2 +1,4 @@
 .vscode/
+emulator/target/
+emulator/logs/*
 ignore/
