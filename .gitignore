@@ -1,4 +1,10 @@
 .vscode/
-emulator/target/
-emulator/logs/*
 ignore/
+
+emulator/logs/*
+
+# ignore target/ excepted the release executable
+emulator/target/*
+!emulator/target/release/
+emulator/target/release/*
+!emulator/target/release/emulator.exe

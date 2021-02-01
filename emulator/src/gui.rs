@@ -101,10 +101,10 @@ pub struct EmulatorGui {
     #[nwg_control(parent: tabs_container, text: "LCD")]
     tab_lcd: nwg::Tab,
     
-    #[nwg_resource(source_file: Some("./imgs/led_on.bmp"))]
+    #[nwg_resource(source_bin: Some(include_bytes!("../imgs/led_on.bmp")))]
     led_on_bmp: nwg::Bitmap,
 
-    #[nwg_resource(source_file: Some("./imgs/led_off.bmp"))]
+    #[nwg_resource(source_bin: Some(include_bytes!("../imgs/led_off.bmp")))]
     led_off_bmp: nwg::Bitmap,
 
     #[nwg_layout(parent: tab_leds, spacing: 1)]
@@ -230,25 +230,13 @@ impl EmulatorGui {
         nwg::stop_thread_dispatch();
     }
 
-    fn disable_window(&self) {
-        if self.data.borrow().cpu_running {
-            self.refresh_timer.stop();
-            self.data.borrow_mut().cpu_running = false;
-            self.run_rbutton.set_enabled(false);
-            self.stop_rbutton.set_enabled(false);
-            self.step_button.set_enabled(false);
-            self.wait_time_button.set_enabled(false);
-            self.step_wait_time_tb.set_enabled(false);
-            self.print_log_cbox.set_enabled(false);
-            nwg::modal_info_message(&self.window, "CPU stopped", 
-                "The CPU is done executing the program.\nClose the main window to exit."
-            );
-        }
-    }
-
     fn listen_gui_msgs(&self) {
         loop { match self.channels.rx.try_recv() {
-            Err(TryRecvError::Disconnected) => panic!("CPU thread has hung up"),
+            Err(TryRecvError::Disconnected) => if self.data.borrow().cpu_running {
+                panic!("CPU thread has hung up")
+            } else {
+                break;
+            },
             Err(TryRecvError::Empty) => break,
             Ok(msg) => match msg {
                 ToGuiMessage::PortB(mut port_b_data) => {
@@ -304,8 +292,20 @@ impl EmulatorGui {
                 ToGuiMessage::LcdScreen(lcd_screen) => self.lcd_screen_lbl
                     .set_text(&lcd_screen),
                 ToGuiMessage::Stopped => {
-                    self.disable_window();
-                    break
+                    self.refresh_timer.stop();
+                    
+                    self.data.borrow_mut().cpu_running = false;
+
+                    self.run_rbutton.set_enabled(false);
+                    self.stop_rbutton.set_enabled(false);
+                    self.step_button.set_enabled(false);
+                    self.wait_time_button.set_enabled(false);
+                    self.step_wait_time_tb.set_enabled(false);
+                    self.print_log_cbox.set_enabled(false);
+
+                    nwg::modal_info_message(&self.window, "CPU stopped", 
+                        "The CPU is done executing the program.\nClose the main window to exit."
+                    );
                 },
             },
         }};

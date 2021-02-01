@@ -42,26 +42,12 @@ pub enum ToGuiMessage {
 
 fn main() {
     let matches = clap_app!(emulator =>
-        (version: "0.1.0")
+        (version: "0.4.0")
         (author: "Thorgaran <thorgaran1@gmail.com>")
         (about: "Emulate a physical w65c02s system to run, test and debug assembly programs")
         (@arg INPUT: +required "Sets the input file to use")
-        (@arg log: -l --log "Save the logs in a file")
+        (@arg log_dir_path: -l --log +takes_value "Save the logs in a file. Takes a path to the folder the log will be put in")
     ).get_matches();
-    
-    // The goal of this is to set the current working directory to emulator/
-    {
-        use std::{env, ffi::OsStr};
-
-        let current_exe = env::current_exe().expect("Unable to read current executable path");
-        let mut path = current_exe.parent().expect("Unable to get executable parent");
-        
-        while path.file_name() != Some(OsStr::new("emulator")) {
-            path = path.parent().expect("Failed to get to the emulator dir");
-        }
-
-        env::set_current_dir(&path).expect("Unable to set the current working dir");
-    }
 
     let bin_path = Path::new(matches.value_of("INPUT").unwrap());
 
@@ -71,16 +57,24 @@ fn main() {
         .read(&mut program)
         .expect("Failed to read binary file as a 32 768 bytes array");
 
-    let log_file = if matches.is_present("log") {
+    let log_file = if let Some(log_dir_path) = matches.value_of("log_dir_path") {
+        let log_dir_path = Path::new(log_dir_path);
+        assert!(log_dir_path.is_dir(), 
+            "Invalid directory path: {}", 
+            log_dir_path.display()
+        );
+        
         let time_str = Local::now().format("%Y-%m-%d_%Hh%Mm%Ss");
         let mut log_file = OpenOptions::new()
             .append(true)
             .create_new(true)
-            .open(format!("logs/log_{}.txt", time_str))
+            .open(format!("{}/log_{}.txt", log_dir_path.display(), time_str))
             .expect("Unable to create file");
+
         log_file.write(format!("Bin file: \"{}\"\n", 
             bin_path.file_name().unwrap().to_str().unwrap()
         ).as_bytes()).expect("Failed to write file name in log");
+
         Some(log_file)
     } else {
         None
