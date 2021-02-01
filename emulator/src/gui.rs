@@ -2,11 +2,11 @@ use nwg::NativeUi;
 use nwd::NwgUi;
 use std::sync::mpsc::{self, Sender, Receiver, TryRecvError};
 use std::cell::RefCell;
-use crate::{GuiMessage, CpuMessage, DEFAULT_STEP_WAIT};
+use crate::{GuiToCpuMessage, ToGuiMessage, DEFAULT_STEP_WAIT};
 
 struct UIChannels {
-    tx: Sender<GuiMessage>,
-    rx: Receiver<CpuMessage>,
+    tx: Sender<GuiToCpuMessage>,
+    rx: Receiver<ToGuiMessage>,
 }
 
 impl Default for UIChannels {
@@ -38,7 +38,7 @@ pub struct EmulatorGui {
     
     // Refresh CPU data (~30 FPS)
     #[nwg_control(parent: window, interval: 33, stopped: false)]
-    #[nwg_events(OnTimerTick: [EmulatorGui::update_cpu_data])]
+    #[nwg_events(OnTimerTick: [EmulatorGui::listen_gui_msgs])]
     refresh_timer: nwg::Timer,
 
     #[nwg_layout(parent: window, spacing: 1)]
@@ -84,8 +84,8 @@ pub struct EmulatorGui {
     #[nwg_control(text: "Show log in console", 
         check_state: nwg::CheckBoxState::Unchecked)]
     #[nwg_layout_item(layout: grid, row: 5, col: 0, col_span: 4)]
-    #[nwg_events( OnButtonClick: [EmulatorGui::send_show_log] )]
-    show_log_cbox: nwg::CheckBox,
+    #[nwg_events( OnButtonClick: [EmulatorGui::send_print_log] )]
+    print_log_cbox: nwg::CheckBox,
 
     #[nwg_control(text: "Cycles: 0")]
     #[nwg_layout_item(layout: grid, row: 5, col: 4, col_span: 2)]
@@ -195,6 +195,18 @@ pub struct EmulatorGui {
     #[nwg_control(parent: port_a_frame, bitmap: Some(&data.led_off_bmp))]
     #[nwg_layout_item(layout: port_a_grid, row: 0, col: 7)]
     led0a: nwg::ImageFrame,
+
+    #[nwg_layout(parent: tab_lcd, spacing: 1)]
+    lcd_grid: nwg::GridLayout,
+
+    #[nwg_resource(family: "Courier New", size: 28)]
+    courier_new: nwg::Font,
+
+    #[nwg_control(parent: tab_lcd, font: Some(&data.courier_new), 
+        h_align: nwg::HTextAlign::Center, text: 
+        "╔════════════════╗\n║                ║\n║                ║\n╚════════════════╝")]
+    #[nwg_layout_item(layout: lcd_grid, row: 0, col: 0)] 
+    lcd_screen_lbl: nwg::Label,
 }
 
 impl EmulatorGui {
@@ -213,7 +225,7 @@ impl EmulatorGui {
 
     fn exit(&self) {
         if self.data.borrow().cpu_running {
-            self.send_gui_msg(GuiMessage::Exit);
+            self.send_gui_msg(GuiToCpuMessage::Exit);
         }
         nwg::stop_thread_dispatch();
     }
@@ -227,19 +239,19 @@ impl EmulatorGui {
             self.step_button.set_enabled(false);
             self.wait_time_button.set_enabled(false);
             self.step_wait_time_tb.set_enabled(false);
-            self.show_log_cbox.set_enabled(false);
+            self.print_log_cbox.set_enabled(false);
             nwg::modal_info_message(&self.window, "CPU stopped", 
                 "The CPU is done executing the program.\nClose the main window to exit."
             );
         }
     }
 
-    fn update_cpu_data(&self) {
+    fn listen_gui_msgs(&self) {
         loop { match self.channels.rx.try_recv() {
             Err(TryRecvError::Disconnected) => panic!("CPU thread has hung up"),
             Err(TryRecvError::Empty) => break,
             Ok(msg) => match msg {
-                CpuMessage::PortB(mut port_b_data) => {
+                ToGuiMessage::PortB(mut port_b_data) => {
                     self.port_b_lbl.set_text(&format!("Port B: {:#04x} ({})",
                         &port_b_data,
                         &port_b_data
@@ -263,7 +275,7 @@ impl EmulatorGui {
                     self.led1b.set_bitmap(bitmaps.pop().unwrap());
                     self.led0b.set_bitmap(bitmaps.pop().unwrap());
                 },
-                CpuMessage::PortA(mut port_a_data) => {
+                ToGuiMessage::PortA(mut port_a_data) => {
                     self.port_a_lbl.set_text(&format!("Port A: {:#04x} ({})",
                         &port_a_data,
                         &port_a_data
@@ -287,9 +299,11 @@ impl EmulatorGui {
                     self.led1a.set_bitmap(bitmaps.pop().unwrap());
                     self.led0a.set_bitmap(bitmaps.pop().unwrap());
                 },
-                CpuMessage::CycleCount(cycle_count) => self.cycle_count_lbl
-                        .set_text(&format!("Cycles: {}", cycle_count)),
-                CpuMessage::Stopped => {
+                ToGuiMessage::CycleCount(cycle_count) => self.cycle_count_lbl
+                    .set_text(&format!("Cycles: {}", cycle_count)),
+                ToGuiMessage::LcdScreen(lcd_screen) => self.lcd_screen_lbl
+                    .set_text(&lcd_screen),
+                ToGuiMessage::Stopped => {
                     self.disable_window();
                     break
                 },
@@ -299,16 +313,16 @@ impl EmulatorGui {
 
     fn send_run(&self) {
         self.step_button.set_enabled(false);
-        self.send_gui_msg(GuiMessage::Run);
+        self.send_gui_msg(GuiToCpuMessage::Run);
     }
 
     fn send_stop(&self) {
         self.step_button.set_enabled(true);
-        self.send_gui_msg(GuiMessage::Stop);
+        self.send_gui_msg(GuiToCpuMessage::Stop);
     }
 
     fn send_step(&self) {
-        self.send_gui_msg(GuiMessage::Step);
+        self.send_gui_msg(GuiToCpuMessage::Step);
     }
 
     fn update_step_wait_time_lbl(&self, cur: usize, sel: usize) {
@@ -333,25 +347,25 @@ impl EmulatorGui {
         self.update_step_wait_time_lbl(new_wait_time, new_wait_time);
         self.wait_time_button.set_enabled(false);
 
-        self.send_gui_msg(GuiMessage::ChangeWaitTime(new_wait_time));
+        self.send_gui_msg(GuiToCpuMessage::ChangeWaitTime(new_wait_time));
     }
 
-    fn send_show_log(&self) {
-        self.send_gui_msg(GuiMessage::ShowLog(match self.show_log_cbox.check_state() {
+    fn send_print_log(&self) {
+        self.send_gui_msg(GuiToCpuMessage::ShowLog(match self.print_log_cbox.check_state() {
             nwg::CheckBoxState::Checked => true,
             nwg::CheckBoxState::Unchecked => false,
             nwg::CheckBoxState::Indeterminate => panic!("CheckBox in indeterminate state"),
         }));
     }
 
-    fn send_gui_msg(&self, msg: GuiMessage) {
+    fn send_gui_msg(&self, msg: GuiToCpuMessage) {
         self.channels.tx.send(msg).expect("CPU thread has hung up");
     }
 }
 
 pub fn run(
-    tx: Sender<GuiMessage>, 
-    rx: Receiver<CpuMessage>,
+    tx: Sender<GuiToCpuMessage>, 
+    rx: Receiver<ToGuiMessage>,
     bin_name: String
 ) {
     let channels = UIChannels { tx, rx };

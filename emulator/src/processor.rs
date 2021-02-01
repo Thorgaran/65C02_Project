@@ -1,20 +1,21 @@
 use w65c02s::{System, W65C02S, State};
-use std::{thread, time};
-use std::fs::File;
-use std::io::Write;
-use std::sync::mpsc::{Sender, Receiver, TryRecvError};
-use crate::{GuiMessage, CpuMessage, DEFAULT_STEP_WAIT};
+use std::{thread::{self, JoinHandle}, time};
+use std::sync::mpsc::{self, Sender, Receiver, TryRecvError};
+use crate::{GuiToCpuMessage, ToGuiMessage, DEFAULT_STEP_WAIT};
+use crate::logger::LogMessage;
+use crate::lcd::{LCD, CpuToLcdMessage, LCDPins};
 
 pub struct PhysSystem {
-    mem: [u8; 65536],
+    mem: [u8; 65_536],
     via: W65C22S,
     step_wait_time: usize,
     cycle_count: usize,
     step_count: usize,
-    show_log: bool,
-    log_file: Option<File>,
-    tx: Sender<CpuMessage>,
-    rx: Receiver<GuiMessage>,
+    tx_log_msgs: Sender<LogMessage>,
+    tx_to_gui: Sender<ToGuiMessage>,
+    rx_from_gui: Receiver<GuiToCpuMessage>,
+    tx_to_lcd: Sender<CpuToLcdMessage>,
+    lcd_handle: JoinHandle<()>,
 }
 
 /// A system with 16K of RAM, 32K of programmable (EEP)ROM,
@@ -22,10 +23,15 @@ pub struct PhysSystem {
 impl PhysSystem {
     pub fn new(
         program: [u8; 32_768],
-        log_file: Option<File>,
-        tx: Sender<CpuMessage>,
-        rx: Receiver<GuiMessage>
+        tx_log_msgs: Sender<LogMessage>,
+        tx_to_gui: Sender<ToGuiMessage>,
+        rx_from_gui: Receiver<GuiToCpuMessage>
     ) -> PhysSystem {
+        let (tx_to_lcd, rx_from_cpu) = mpsc::channel();
+        let lcd = LCD::new(Sender::clone(&tx_log_msgs), Sender::clone(&tx_to_gui));
+
+        let lcd_handle = lcd.run(rx_from_cpu);
+        
         let mut mem: [u8; 65_536] = [0xFF; 65_536];
         // Insert the program into the second half of mem
         mem[0x8000..].copy_from_slice(&program);
@@ -36,25 +42,29 @@ impl PhysSystem {
             step_wait_time: DEFAULT_STEP_WAIT,
             cycle_count: 0,
             step_count: 0,
-            show_log: false,
-            log_file,
-            tx,
-            rx,
+            tx_log_msgs,
+            tx_to_gui,
+            rx_from_gui,
+            tx_to_lcd,
+            lcd_handle,
         }
     }
 
     pub fn run(mut self) -> thread::JoinHandle<()> {
         let mut cpu = W65C02S::new();
+
         thread::Builder::new().name("CPU thread".to_string()).spawn(move || {
             'cpu_thread_main: loop {
-                match self.rx.recv().expect("GUI thread has hung up") {
-                    GuiMessage::Run => 'run: loop {
-                        match self.rx.try_recv() {
+                match self.rx_from_gui.recv().expect("GUI thread has hung up") {
+                    GuiToCpuMessage::Run => 'run: loop {
+                        match self.rx_from_gui.try_recv() {
                             Err(TryRecvError::Disconnected) => panic!("GUI thread has hung up"),
-                            Ok(GuiMessage::Stop) => break 'run,
-                            Ok(GuiMessage::ChangeWaitTime(new_wait_time)) => self.step_wait_time = new_wait_time,
-                            Ok(GuiMessage::ShowLog(show_log)) => self.show_log = show_log,
-                            Ok(GuiMessage::Exit) => break 'cpu_thread_main,
+                            Ok(GuiToCpuMessage::Stop) => break 'run,
+                            Ok(GuiToCpuMessage::ChangeWaitTime(new_wait_time)) => self.step_wait_time = new_wait_time,
+                            Ok(GuiToCpuMessage::ShowLog(print_log)) => self.tx_log_msgs.send(
+                                LogMessage::ChangePrintLog(print_log)
+                            ).expect("Logger thread has hung up"),
+                            Ok(GuiToCpuMessage::Exit) => break 'cpu_thread_main,
                             // If there are no messages or the message is "step" or "run", continue running
                             _ => {},
                         }
@@ -63,28 +73,33 @@ impl PhysSystem {
                         }
                         thread::sleep(time::Duration::from_millis(self.step_wait_time as u64));
                     },
-                    GuiMessage::Step => if self.step(&mut cpu) == State::Stopped {
+                    GuiToCpuMessage::Step => if self.step(&mut cpu) == State::Stopped {
                         break 'cpu_thread_main;
                     },
-                    GuiMessage::ChangeWaitTime(new_wait_time) => self.step_wait_time = new_wait_time,
-                    GuiMessage::ShowLog(show_log) => self.show_log = show_log,
-                    GuiMessage::Exit => break 'cpu_thread_main,
+                    GuiToCpuMessage::ChangeWaitTime(new_wait_time) => self.step_wait_time = new_wait_time,
+                    GuiToCpuMessage::ShowLog(print_log) => self.tx_log_msgs.send(
+                        LogMessage::ChangePrintLog(print_log)
+                    ).expect("Logger thread has hung up"),
+                    GuiToCpuMessage::Exit => break 'cpu_thread_main,
                     _ => {},
                 }
             };
-            log(&mut self.log_file, &self.show_log, format!(
-                "\n\nTotal cycle count: {}", 
-                self.cycle_count
-            ));
-            send_cpu_msg(&self.tx, CpuMessage::CycleCount(self.cycle_count));
-            send_cpu_msg(&self.tx, CpuMessage::Stopped);
+
+            log!(self.tx_log_msgs, "\n\nTotal cycle count: {}", self.cycle_count);
+
+            send_cpu_msg(&self.tx_to_gui, ToGuiMessage::CycleCount(self.cycle_count));
+            send_cpu_msg(&self.tx_to_gui, ToGuiMessage::Stopped);
+
+            self.tx_to_lcd.send(CpuToLcdMessage::Exit).expect("LCD thread has hung up");
+            self.lcd_handle.join().unwrap();
+
             thread::sleep(time::Duration::from_millis(500));
         }).unwrap()
     }
 
     fn step(&mut self, cpu: &mut W65C02S) -> State {
-        send_cpu_msg(&self.tx, CpuMessage::CycleCount(self.cycle_count));
-        log(&mut self.log_file, &self.show_log, format!("\nStep {}:", self.step_count));
+        send_cpu_msg(&self.tx_to_gui, ToGuiMessage::CycleCount(self.cycle_count));
+        log!(self.tx_log_msgs, "\nStep {}:", self.step_count);
         self.step_count += 1;
         cpu.step(self)
     }
@@ -102,29 +117,29 @@ impl System for PhysSystem {
             // read from ROM
             0x8000..=0xffff => self.mem[addr as usize],
             _ => {
-                let err_msg = format!(
+                log!(self.tx_log_msgs, 
                     "\n    Undefined behavior! Processor trying to read garbage at address {:04x}.", 
                     addr
                 );
-                log(&mut self.log_file, &self.show_log, err_msg);
-                panic!()
+                panic!("Processor trying to read garbage");
             },
         };
-        log(&mut self.log_file, &self.show_log, format!("\n    READ  {:02x} at {:04x}", value, addr));
+        log!(self.tx_log_msgs, "\n    READ  {:02x} at {:04x}", value, addr);
         value
     }
 
     fn write(&mut self, _cpu: &mut W65C02S, addr: u16, value: u8) {
         self.cycle_count += 1;
         self.via.clock_pulse();
-        log(&mut self.log_file, &self.show_log, format!("\n    WRITE {:02x} to {:04x}", value, addr));
+        log!(self.tx_log_msgs, "\n    WRITE {:02x} at {:04x}", value, addr);
         match addr {
             // write to RAM (note that writes to 4000-7fff are useless but still happen on the physical system)
             0x0000..=0x5fff | 0x6010..=0x7fff => self.mem[addr as usize] = value,
             // write to VIA
             0x6000..=0x600f => {
                 self.mem[addr as usize] = value;
-                self.via.write(&mut self.log_file, &self.show_log, &self.tx, (addr as u8) & 0b0000_1111, value);
+                self.via.write(&self.tx_log_msgs, &self.tx_to_gui, 
+                    &self.tx_to_lcd, (addr as u8) & 0b0000_1111, value);
             },
             // the write is useless
             _ => {},
@@ -194,9 +209,9 @@ impl W65C22S {
     }
 
     fn write(&mut self, 
-        log_file: &mut Option<File>, 
-        show_log: &bool, 
-        tx: &Sender<CpuMessage>, 
+        tx_log_msgs: &Sender<LogMessage>, 
+        tx_to_gui: &Sender<ToGuiMessage>,
+        tx_to_lcd: &Sender<CpuToLcdMessage>,
         addr: u8, 
         value: u8
     ) {
@@ -205,23 +220,25 @@ impl W65C22S {
                 self.orb = value;
                 // Only change the bit of PB when DDRB = 1 (output)
                 self.pb = (self.pb | self.ddrb) & (value | !self.ddrb);
-                send_cpu_msg(tx, CpuMessage::PortB(self.pb));
-                log(log_file, show_log, format!(" -> PORT B: {:#010b} {:#04x} {}", 
-                    self.pb,
-                    self.pb,
-                    self.pb
-                ))
+                send_cpu_msg(tx_to_gui, ToGuiMessage::PortB(self.pb));
+                log!(tx_log_msgs, " -> PORT B: {:#010b} {:#04x} {}", self.pb, self.pb, self.pb);
+                // Only send data to the LCD when the enable pin is set
+                if self.pb & 0b0010_0000 == 0b0010_0000 {
+                    let lcd_pins = LCDPins {
+                        rs: if self.pb & 0b1000_0000 == 0 { false } else { true },
+                        rw: if self.pb & 0b0100_0000 == 0 { false } else { true },
+                        data: (self.pb & 0b0000_1111) << 4,
+                    };
+                    tx_to_lcd.send(CpuToLcdMessage::PinChange(lcd_pins))
+                        .expect("LCD thread has hung up");
+                }
             },
             PORTA => {
                 self.ora = value;
                 // Only change the bit of PA when DDRA = 1 (output)
                 self.pa = (self.pa | self.ddra) & (value | !self.ddra);
-                send_cpu_msg(tx, CpuMessage::PortA(self.pa));
-                log(log_file, show_log, format!(" -> PORT A: {:#010b} {:#04x} {}", 
-                    self.pa,
-                    self.pa,
-                    self.pa
-                ))
+                send_cpu_msg(tx_to_gui, ToGuiMessage::PortA(self.pa));
+                log!(tx_log_msgs, " -> PORT A: {:#010b} {:#04x} {}", self.pa, self.pa, self.pa);
             },
             DDRB => {
                 self.ddrb = value;
@@ -240,19 +257,8 @@ impl W65C22S {
     }
 }
 
-fn send_cpu_msg(tx: &Sender<CpuMessage>, msg: CpuMessage) {
-    tx.send(msg).expect("GUI thread has hung up");
-}
-
-fn log<T: std::fmt::Display>(log_file: &mut Option<File>, show_log: &bool, msg: T) {
-    let msg = msg.to_string();
-    if *show_log {
-        print!("{}", msg);
-    }
-    if let Some(log_file) = log_file {
-        log_file.write(msg.as_bytes())
-            .expect("Failed to write log");
-    }
+fn send_cpu_msg(tx_to_gui: &Sender<ToGuiMessage>, msg: ToGuiMessage) {
+    tx_to_gui.send(msg).expect("GUI thread has hung up");
 }
 
 #[cfg(test)]

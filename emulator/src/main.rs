@@ -4,19 +4,26 @@ extern crate native_windows_derive as nwd;
 extern crate chrono;
 #[macro_use]
 extern crate clap;
+extern crate timer;
 use chrono::prelude::*;
 use std::path::Path;
 use std::fs::{File, OpenOptions};  
 use std::io::{Read, Write};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Sender};
 
+#[macro_use]
+pub mod logger;
 pub mod processor;
+pub mod lcd;
 pub mod gui;
+
+use logger::{Logger, LogMessage};
+use processor::PhysSystem;
 
 // Default waiting time between steps when running, in milliseconds
 const DEFAULT_STEP_WAIT: usize = 50;
 
-pub enum GuiMessage {
+pub enum GuiToCpuMessage {
     Run,
     Stop,
     Step,
@@ -25,10 +32,11 @@ pub enum GuiMessage {
     Exit,
 }
 
-pub enum CpuMessage {
+pub enum ToGuiMessage {
     PortB(u8),
     PortA(u8),
     CycleCount(usize),
+    LcdScreen(String),
     Stopped,
 }
 
@@ -78,12 +86,16 @@ fn main() {
         None
     };
 
+    let (tx_log_msgs, rx_log_msgs) = mpsc::channel();
+
+    let logger = Logger::new(log_file, rx_log_msgs);
+    let logger_handle = logger.run();
+
     let (tx_gui_msgs, rx_gui_msgs) = mpsc::channel();
     let (tx_cpu_msgs, rx_cpu_msgs) = mpsc::channel();
 
-    let system = processor::PhysSystem::new(program, log_file, tx_cpu_msgs, rx_gui_msgs);
-
-    let handle = system.run();
+    let system = PhysSystem::new(program, Sender::clone(&tx_log_msgs), tx_cpu_msgs, rx_gui_msgs);
+    let system_handle = system.run();
 
     gui::run(tx_gui_msgs, rx_cpu_msgs, String::from(bin_path
         .file_name()
@@ -92,5 +104,8 @@ fn main() {
         .unwrap()
     ));
 
-    handle.join().unwrap();
+    system_handle.join().unwrap();
+
+    tx_log_msgs.send(LogMessage::Exit).expect("Logger thread has hung up");
+    logger_handle.join().unwrap();
 }
