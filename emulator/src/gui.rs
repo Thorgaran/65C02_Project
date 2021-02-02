@@ -2,10 +2,19 @@ use nwg::NativeUi;
 use nwd::NwgUi;
 use std::sync::mpsc::{self, Sender, Receiver, TryRecvError};
 use std::cell::RefCell;
-use crate::{GuiToCpuMessage, ToGuiMessage, DEFAULT_STEP_WAIT};
+use crate::{ToSysMessage, DEFAULT_STEP_WAIT};
+
+pub enum ToGuiMessage {
+    PortB(u8),
+    PortA(u8),
+    CycleCount(usize),
+    LcdScreen(String),
+    Paused,
+    Stopped,
+}
 
 struct UIChannels {
-    tx: Sender<GuiToCpuMessage>,
+    tx: Sender<ToSysMessage>,
     rx: Receiver<ToGuiMessage>,
 }
 
@@ -61,7 +70,7 @@ impl Default for WaitTime {
 struct UIData {
     bin_name: String,
     cur_wait_time: WaitTime,
-    cpu_running: bool,
+    sys_running: bool,
 }
 
 #[derive(Default, NwgUi)]
@@ -75,7 +84,7 @@ pub struct EmulatorGui {
         OnWindowClose: [EmulatorGui::exit] )]
     window: nwg::Window,
     
-    // Refresh CPU data (~30 FPS)
+    // Refresh SYS data (~30 FPS)
     #[nwg_control(parent: window, interval: 33, stopped: false)]
     #[nwg_events(OnTimerTick: [EmulatorGui::listen_gui_msgs])]
     refresh_timer: nwg::Timer,
@@ -169,7 +178,7 @@ pub struct EmulatorGui {
     port_b_lbl: nwg::Label,
 
     #[nwg_control(parent: tab_leds)]
-    #[nwg_layout_item(layout: led_grid, row: 1, col: 0, row_span: 2)]
+    #[nwg_layout_item(layout: led_grid, row: 1, col: 0, row_span: 2, col_span: 2)]
     port_b_frame: nwg::Frame,
 
     #[nwg_layout(parent: port_b_frame, spacing: 1)]
@@ -211,8 +220,14 @@ pub struct EmulatorGui {
     #[nwg_layout_item(layout: led_grid, row: 3, col: 0)]
     port_a_lbl: nwg::Label,
 
+    #[nwg_control(parent: tab_leds, text: "Use as breakpoint", font: Some(&data.segoe_small),
+        check_state: nwg::CheckBoxState::Checked)]
+    #[nwg_layout_item(layout: led_grid, row: 3, col: 1)]
+    port_a_breakpoint_cbox: nwg::CheckBox,
+
     #[nwg_control(parent: tab_leds)]
-    #[nwg_layout_item(layout: led_grid, row: 4, col: 0, row_span: 2)]
+    #[nwg_layout_item(layout: led_grid, row: 4, col: 0, row_span: 2, col_span: 2)]
+    #[nwg_events( OnButtonClick: [EmulatorGui::send_breakpoint] )]
     port_a_frame: nwg::Frame,
 
     #[nwg_layout(parent: port_a_frame, spacing: 1)]
@@ -278,16 +293,16 @@ impl EmulatorGui {
     }
 
     fn exit(&self) {
-        if self.data.borrow().cpu_running {
-            self.send_gui_msg(GuiToCpuMessage::Exit);
+        if self.data.borrow().sys_running {
+            self.send_gui_msg(ToSysMessage::Exit);
         }
         nwg::stop_thread_dispatch();
     }
 
     fn listen_gui_msgs(&self) {
         loop { match self.channels.rx.try_recv() {
-            Err(TryRecvError::Disconnected) => if self.data.borrow().cpu_running {
-                panic!("CPU thread has hung up")
+            Err(TryRecvError::Disconnected) => if self.data.borrow().sys_running {
+                panic!("SYS thread has hung up")
             } else {
                 break;
             },
@@ -345,10 +360,15 @@ impl EmulatorGui {
                     .set_text(&format!("Cycles: {}", cycle_count)),
                 ToGuiMessage::LcdScreen(lcd_screen) => self.lcd_screen_lbl
                     .set_text(&lcd_screen),
+                ToGuiMessage::Paused => {
+                    self.run_rbutton.set_check_state(nwg::RadioButtonState::Unchecked);
+                    self.stop_rbutton.set_check_state(nwg::RadioButtonState::Checked);
+                    self.step_button.set_enabled(true);
+                }
                 ToGuiMessage::Stopped => {
                     self.refresh_timer.stop();
 
-                    self.data.borrow_mut().cpu_running = false;
+                    self.data.borrow_mut().sys_running = false;
 
                     self.run_rbutton.set_enabled(false);
                     self.stop_rbutton.set_enabled(false);
@@ -367,16 +387,16 @@ impl EmulatorGui {
 
     fn send_run(&self) {
         self.step_button.set_enabled(false);
-        self.send_gui_msg(GuiToCpuMessage::Run);
+        self.send_gui_msg(ToSysMessage::Run);
     }
 
     fn send_stop(&self) {
         self.step_button.set_enabled(true);
-        self.send_gui_msg(GuiToCpuMessage::Stop);
+        self.send_gui_msg(ToSysMessage::Stop);
     }
 
     fn send_step(&self) {
-        self.send_gui_msg(GuiToCpuMessage::Step);
+        self.send_gui_msg(ToSysMessage::Step);
     }
 
     fn update_step_wait_time_lbl(&self, cur: &WaitTime, sel: &WaitTime) {
@@ -436,26 +456,34 @@ impl EmulatorGui {
         self.update_step_wait_time_lbl(&new_wait_time, &new_wait_time);
         self.wait_time_button.set_enabled(false);
 
-        self.send_gui_msg(GuiToCpuMessage::ChangeWaitTime(new_wait_time.to_micro()));
+        self.send_gui_msg(ToSysMessage::ChangeWaitTime(new_wait_time.to_micro()));
 
         self.data.borrow_mut().cur_wait_time = new_wait_time;
     }
 
     fn send_print_log(&self) {
-        self.send_gui_msg(GuiToCpuMessage::ShowLog(match self.print_log_cbox.check_state() {
+        self.send_gui_msg(ToSysMessage::ShowLog(match self.print_log_cbox.check_state() {
             nwg::CheckBoxState::Checked => true,
             nwg::CheckBoxState::Unchecked => false,
             nwg::CheckBoxState::Indeterminate => panic!("CheckBox in indeterminate state"),
         }));
     }
 
-    fn send_gui_msg(&self, msg: GuiToCpuMessage) {
-        self.channels.tx.send(msg).expect("CPU thread has hung up");
+    fn send_breakpoint(&self) {
+        self.send_gui_msg(ToSysMessage::Breakpoint(match self.print_log_cbox.check_state() {
+            nwg::CheckBoxState::Checked => true,
+            nwg::CheckBoxState::Unchecked => false,
+            nwg::CheckBoxState::Indeterminate => panic!("CheckBox in indeterminate state"),
+        }));
+    }
+
+    fn send_gui_msg(&self, msg: ToSysMessage) {
+        self.channels.tx.send(msg).expect("SYS thread has hung up");
     }
 }
 
 pub fn run(
-    tx: Sender<GuiToCpuMessage>, 
+    tx: Sender<ToSysMessage>, 
     rx: Receiver<ToGuiMessage>,
     bin_name: String
 ) {
@@ -463,7 +491,7 @@ pub fn run(
     let data = RefCell::new(UIData { 
         bin_name, 
         cur_wait_time: Default::default(),
-        cpu_running: true,
+        sys_running: true,
     });
 
     nwg::init().expect("Failed to init Native Windows GUI");

@@ -21,7 +21,7 @@ const FONT_TABLE: [char; 256] = [
     'p', 'q', 'θ', '∞', 'Ω', 'ü', 'Σ', 'π', '𝔵', 'y', '千', '万', '円', '÷', ' ', '█',
 ];
 
-pub enum CpuToLcdMessage {
+pub enum SysToLcdMessage {
     PinChange(LCDPins),
     Exit,
 }
@@ -114,7 +114,7 @@ impl LCD {
         lcd
     }
 
-    pub fn run(mut self, rx_cpu_msgs: Receiver<CpuToLcdMessage>) -> JoinHandle<()> {
+    pub fn run(mut self, rx_sys_msgs: Receiver<SysToLcdMessage>) -> JoinHandle<()> {
         thread::Builder::new().name("LCD thread".to_string()).spawn(move || {
             let (tx_timer_msgs, rx_timer_msgs) = mpsc::channel();
             let timer = timer::MessageTimer::new(tx_timer_msgs);
@@ -138,10 +138,10 @@ impl LCD {
                     }
                 }
 
-                'read_cpu_msgs: loop { match rx_cpu_msgs.try_recv() {
-                    Err(TryRecvError::Disconnected) => panic!("CPU thread has hung up"),
-                    Err(TryRecvError::Empty) => break 'read_cpu_msgs,
-                    Ok(CpuToLcdMessage::PinChange(lcd_pins)) => {
+                'read_sys_msgs: loop { match rx_sys_msgs.try_recv() {
+                    Err(TryRecvError::Disconnected) => panic!("SYS thread has hung up"),
+                    Err(TryRecvError::Empty) => break 'read_sys_msgs,
+                    Ok(SysToLcdMessage::PinChange(lcd_pins)) => {
                         if self.waiting_for_more_data {
                             self.pins = lcd_pins;
                             self.waiting_for_more_data = false;
@@ -161,7 +161,7 @@ impl LCD {
                             self.read_pins();
                         }
                     },
-                    Ok(CpuToLcdMessage::Exit) => break 'lcd_thread_main,
+                    Ok(SysToLcdMessage::Exit) => break 'lcd_thread_main,
                 }};
             }
         }).unwrap()
