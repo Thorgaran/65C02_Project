@@ -40,9 +40,12 @@ enum Font { FiveByTen, FiveByEight }
 enum DisplayState { On, Off }
 #[derive(PartialEq)]
 enum CursorState { On, Off }
-enum ShiftDir { Right, Left }
 #[derive(PartialEq)]
-enum DisplayBehavior { ShiftDisplay, MoveCursor }
+enum BlinkState { On, Off }
+#[derive(Clone)]
+enum ShiftDir { Right, Left }
+#[derive(PartialEq, Clone)]
+enum DisplayBehavior { Both, MoveCursor, ShiftDisplay }
 
 struct LCDConfig {
     data_length: DataLength,
@@ -50,7 +53,7 @@ struct LCDConfig {
     font: Font,
     display_state: DisplayState,
     cursor_state: CursorState,
-    blinking: bool,
+    blink_state: BlinkState,
     shift_dir: ShiftDir,
     display_behavior: DisplayBehavior,
 }
@@ -63,6 +66,8 @@ enum AddrCounter {
 pub struct LCD {
     pins: LCDPins,
     screen: String,
+    current_blink_state: BlinkState,
+    cycles_before_blink: usize,
     display_addr: u8,
     addr_counter: AddrCounter,
     ddram_data: [u8; 0x80],
@@ -85,6 +90,8 @@ impl LCD {
                 data: 0b0000_0000,
             },
             screen: String::new(),
+            current_blink_state: BlinkState::Off,
+            cycles_before_blink: 102_400,
             display_addr: 0x0,
             addr_counter: AddrCounter::Ddram,
             ddram_data: [0xff; 0x80],
@@ -95,7 +102,7 @@ impl LCD {
                 font: Font::FiveByEight,
                 display_state: DisplayState::On,
                 cursor_state: CursorState::Off,
-                blinking: false,
+                blink_state: BlinkState::Off,
                 shift_dir: ShiftDir::Right,
                 display_behavior: DisplayBehavior::MoveCursor,
             },
@@ -116,6 +123,20 @@ impl LCD {
 
             'lcd_thread_main: loop {
                 rx_timer_msgs.recv().expect("Error receiving LCD clock pulse");
+                
+                // Blinking mecanism
+                if self.config.blink_state == BlinkState::On {
+                    if self.cycles_before_blink == 0 {
+                        self.cycles_before_blink = 102_400;
+                        self.current_blink_state = match self.current_blink_state {
+                            BlinkState::On => BlinkState::Off,
+                            BlinkState::Off => BlinkState::On,
+                        };
+                        self.update_screen();
+                    } else {
+                        self.cycles_before_blink -= 1;
+                    }
+                }
 
                 'read_cpu_msgs: loop { match rx_cpu_msgs.try_recv() {
                     Err(TryRecvError::Disconnected) => panic!("CPU thread has hung up"),
@@ -146,67 +167,53 @@ impl LCD {
         }).unwrap()
     }
 
-    fn slice_to_string(slice: &[u8]) -> String {
+    fn ddram_to_string(&self, start_addr: u8, end_addr: u8) -> String {
         let mut string = String::new();
 
-        for char_code in slice.iter() {
-            string.push(FONT_TABLE[*char_code as usize]);
+        for (i, char_code) in self.ddram_data[(start_addr as usize)..(end_addr as usize)]
+        .iter().enumerate() {
+            if self.config.cursor_state == CursorState::On 
+            && start_addr + i as u8 == self.ddram_addr {
+                string.push_str("\u{200c}\u{0332}");
+            }
+            
+            if self.current_blink_state == BlinkState::On 
+            && start_addr + i as u8 == self.ddram_addr {
+                string.push(FONT_TABLE[0xff]);
+            } else {
+                string.push(FONT_TABLE[*char_code as usize]);
+            }
         }
 
         string
     }
 
     fn update_screen(&mut self) {
-        let addr = self.display_addr as usize;
+        let addr = self.display_addr;
         let mut new_screen = String::from("╔════════════════╗\n║");
-        let mut data_with_cursor = self.ddram_data;
-        
-        if data_with_cursor[self.ddram_addr as usize] == 0x20
-            && self.config.cursor_state == CursorState::On 
-        {
-            data_with_cursor[self.ddram_addr as usize] = 0x5f
-        }
 
         match self.config.nb_lines {
             NbLines::One => {
                 if addr > 0x30 {
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[addr..0x4f]
-                    ));
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[..addr-0x30]
-                    ));
+                    new_screen.push_str(&self.ddram_to_string(addr, 0x50));
+                    new_screen.push_str(&self.ddram_to_string(0x00, addr-0x30));
                     new_screen.push_str("║\n║                ");
                 } else {
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[addr..addr+0x10]
-                    ));
+                    new_screen.push_str(&self.ddram_to_string(addr, addr+0x10));
                     new_screen.push_str("║\n║                ");
                 }
             },
             NbLines::Two => {
                 if addr > 0x18 {
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[addr..0x27]
-                    ));
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[..addr-0x18]
-                    ));
+                    new_screen.push_str(&self.ddram_to_string(addr, 0x28));
+                    new_screen.push_str(&self.ddram_to_string(0x00, addr-0x18));
                     new_screen.push_str("║\n║");
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[addr+0x40..]
-                    ));
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[0x40..addr+0x28]
-                    ));
+                    new_screen.push_str(&self.ddram_to_string(addr+0x40, 0x68));
+                    new_screen.push_str(&self.ddram_to_string(0x40, addr+0x28));
                 } else {
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[addr..addr+0x10]
-                    ));
+                    new_screen.push_str(&self.ddram_to_string(addr, addr+0x10));
                     new_screen.push_str("║\n║");
-                    new_screen.push_str(&LCD::slice_to_string(
-                        &data_with_cursor[addr+0x40..addr+0x50]
-                    ));
+                    new_screen.push_str(&self.ddram_to_string(addr+0x40, addr+0x50));
                 }
             },
         }
@@ -214,27 +221,43 @@ impl LCD {
         new_screen.push_str("║\n╚════════════════╝");
     
         self.screen = new_screen;
-        log!(self.tx_log_msgs, "\n{}", self.screen);
+        log!(self.tx_log_msgs, "\nDISPLAY_ADDR:{}\n{}", self.display_addr, self.screen);
         self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
             .expect("GUI thread has hung up");
     }
     
-    fn change_ddram_addr(&mut self, new_ddram_addr: u8) {
-        match self.config.nb_lines {
-            NbLines::One => self.ddram_addr = new_ddram_addr % 0x4f,
-            NbLines::Two => self.ddram_addr = match new_ddram_addr % 0x67 {
-                0x28 => 0x40,
-                0x3f => 0x27,
-                _ => new_ddram_addr % 0x67,
-            },
+    fn cursor_display_shift(&mut self, shift_dir: ShiftDir, display_behavior: DisplayBehavior) {
+        if display_behavior != DisplayBehavior::ShiftDisplay {
+            match shift_dir {
+                ShiftDir::Left => self.ddram_addr = self.ddram_addr.wrapping_sub(1),
+                ShiftDir::Right => self.ddram_addr += 1,
+            }
+            match (&self.config.nb_lines, self.ddram_addr) {
+                (&NbLines::One, 0xff) => self.ddram_addr = 0x4f,
+                (&NbLines::One, 0x50) => self.ddram_addr = 0x00,
+                (&NbLines::Two, 0xff) => self.ddram_addr = 0x67,
+                (&NbLines::Two, 0x28) => self.ddram_addr = 0x40,
+                (&NbLines::Two, 0x3f) => self.ddram_addr = 0x27,
+                (&NbLines::Two, 0x68) => self.ddram_addr = 0x00,
+                (_, _) => {},
+            }
         }
-    }
 
-    fn change_display_addr(&mut self, new_display_addr: u8) {
-        self.display_addr = new_display_addr % match self.config.nb_lines {
-            NbLines::One => 0x4f,
-            NbLines::Two => 0x27,
+        if display_behavior != DisplayBehavior::MoveCursor {
+            match shift_dir {
+                ShiftDir::Left => self.display_addr = self.display_addr.wrapping_sub(1),
+                ShiftDir::Right => self.display_addr += 1,
+            }
+            match (&self.config.nb_lines, self.display_addr) {
+                (&NbLines::One, 0xff) => self.display_addr = 0x4f,
+                (&NbLines::One, 0x50) => self.display_addr = 0x00,
+                (&NbLines::Two, 0xff) => self.display_addr = 0x27,
+                (&NbLines::Two, 0x28) => self.display_addr = 0x00,
+                (_, _) => {},
+            }
         }
+
+        self.update_screen();
     }
 
     fn read_pins(&mut self) {
@@ -269,7 +292,7 @@ impl LCD {
                     self.config.display_behavior = if self.pins.data & 0b0000_0001 == 0 {
                         DisplayBehavior::MoveCursor
                     } else {
-                        DisplayBehavior::ShiftDisplay
+                        DisplayBehavior::Both
                     };
                 },
                 // Display on/off control
@@ -284,23 +307,28 @@ impl LCD {
                     } else {
                         CursorState::On
                     };
-                    self.config.blinking = if self.pins.data & 0b0000_0001 == 0 {
-                        false
+                    self.config.blink_state = if self.pins.data & 0b0000_0001 == 0 {
+                        self.current_blink_state = BlinkState::Off;
+                        BlinkState::Off
                     } else {
-                        true
+                        self.cycles_before_blink = 102_400;
+                        BlinkState::On
                     };
                     self.update_screen();
                 },
                 // Cursor or display shift
-                3 => match (self.pins.data & 0b0000_1000, self.pins.data & 0b0000_0100) {
-                    // S/C=0, R/L=0
-                    (0, 0) => self.change_ddram_addr(self.ddram_addr - 1),
-                    // S/C=0, R/L=1
-                    (0, _) => self.change_ddram_addr(self.ddram_addr + 1),
-                    // S/C=1, R/L=0
-                    (_, 0) => self.change_display_addr(self.display_addr - 1),
-                    // S/C=1, R/L=1
-                    (_, _) => self.change_display_addr(self.display_addr + 1),
+                3 => {
+                    match (self.pins.data & 0b0000_1000, self.pins.data & 0b0000_0100) {
+                        // S/C=0, R/L=0
+                        (0, 0) => self.cursor_display_shift(ShiftDir::Left, DisplayBehavior::MoveCursor),
+                        // S/C=0, R/L=1
+                        (0, _) => self.cursor_display_shift(ShiftDir::Right, DisplayBehavior::MoveCursor),
+                        // S/C=1, R/L=0
+                        (_, 0) => self.cursor_display_shift(ShiftDir::Left, DisplayBehavior::ShiftDisplay),
+                        // S/C=1, R/L=1
+                        (_, _) => self.cursor_display_shift(ShiftDir::Right, DisplayBehavior::ShiftDisplay),
+                    };
+                    self.update_screen();
                 },
                 // Function set
                 2 => {
@@ -355,24 +383,13 @@ impl LCD {
             (false, true) => todo!(),
             // Write to DDRAM or CGRAM
             (true, false) => {
-                match (&self.addr_counter, &self.config.shift_dir) {
-                    (&AddrCounter::Ddram, &ShiftDir::Right) => {
+                match &self.addr_counter {
+                    &AddrCounter::Ddram => {
                         self.ddram_data[self.ddram_addr as usize] = self.pins.data;
-                        self.change_ddram_addr(self.ddram_addr + 1);
-                        if self.config.display_behavior == DisplayBehavior::ShiftDisplay {
-                            self.change_display_addr(self.display_addr + 1);
-                        }
-                        self.update_screen();
+                        self.cursor_display_shift(self.config.shift_dir.clone(),
+                            self.config.display_behavior.clone());
                     },
-                    (&AddrCounter::Ddram, &ShiftDir::Left) => {
-                        self.ddram_data[self.ddram_addr as usize] = self.pins.data;
-                        self.change_ddram_addr(self.ddram_addr - 1);
-                        if self.config.display_behavior == DisplayBehavior::ShiftDisplay {
-                            self.change_display_addr(self.display_addr - 1);
-                        }
-                        self.update_screen();
-                    },
-                    (&AddrCounter::Cgram, _) => todo!(),
+                    &AddrCounter::Cgram => todo!(),
                 }
             },
             // Read DDRAM or CGRAM

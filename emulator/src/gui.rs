@@ -18,10 +18,49 @@ impl Default for UIChannels {
     }
 }
 
+struct WaitTime {
+    time: usize,
+    unit: WaitTimeUnit,
+}
+
+#[derive(Clone)]
+enum WaitTimeUnit {
+    Milli,
+    TensOfMicro,
+}
+
+impl WaitTime {
+    fn to_micro(&self) -> usize {
+        match self.unit {
+            WaitTimeUnit::Milli => self.time * 1000,
+            WaitTimeUnit::TensOfMicro => self.time * 10,
+        }
+    }
+}
+
+use std::fmt;
+impl fmt::Display for WaitTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.unit {
+            WaitTimeUnit::Milli => write!(f, "{}ms", self.time),
+            WaitTimeUnit::TensOfMicro => write!(f, "{}ms", (self.time as f64) / 100.0),
+        }
+    }
+}
+
+impl Default for WaitTime {
+    fn default() -> Self {
+        WaitTime {
+            time: DEFAULT_STEP_WAIT,
+            unit: WaitTimeUnit::Milli,
+        }
+    }
+}
+
 #[derive(Default)]
 struct UIData {
     bin_name: String,
-    cur_wait_time: usize,
+    cur_wait_time: WaitTime,
     cpu_running: bool,
 }
 
@@ -48,7 +87,8 @@ pub struct EmulatorGui {
     #[nwg_layout_item(layout: grid, row: 0, col: 0, col_span: 6)]
     bin_name_lbl: nwg::Label,
 
-    #[nwg_control(text: "Run", check_state: RadioButtonState::Unchecked)]
+    #[nwg_control(text: "Run", check_state: RadioButtonState::Unchecked,
+        flags: "VISIBLE|GROUP")]
     #[nwg_layout_item(layout: grid, row: 1, col: 0, col_span: 2)]
     #[nwg_events( OnButtonClick: [EmulatorGui::send_run] )]
     run_rbutton: nwg::RadioButton,
@@ -68,8 +108,19 @@ pub struct EmulatorGui {
         DEFAULT_STEP_WAIT,
         DEFAULT_STEP_WAIT
     ))]
-    #[nwg_layout_item(layout: grid, row: 2, col: 0, row_span: 2, col_span: 5)]
+    #[nwg_layout_item(layout: grid, row: 2, col: 0, row_span: 2, col_span: 4)]
     step_wait_time_lbl: nwg::Label,
+
+    #[nwg_control(text: "µs (x10)", check_state: RadioButtonState::Unchecked,
+        flags: "VISIBLE|GROUP")]
+    #[nwg_layout_item(layout: grid, row: 2, col: 4, col_span: 2)]
+    #[nwg_events( OnButtonClick: [EmulatorGui::set_wait_time_micro] )]
+    wait_time_micro_rbutton: nwg::RadioButton,
+
+    #[nwg_control(text: "ms", check_state: RadioButtonState::Checked)]
+    #[nwg_layout_item(layout: grid, row: 3, col: 4)]
+    #[nwg_events( OnButtonClick: [EmulatorGui::set_wait_time_milli] )]
+    wait_time_milli_rbutton: nwg::RadioButton,
 
     #[nwg_control(text: "✓")]
     #[nwg_layout_item(layout: grid, row: 3, col: 5)]
@@ -81,14 +132,17 @@ pub struct EmulatorGui {
     #[nwg_events( OnHorizontalScroll: [EmulatorGui::step_wait_time_tb_change] )]
     step_wait_time_tb: nwg::TrackBar,
 
-    #[nwg_control(text: "Show log in console", 
+    #[nwg_resource(family: "Segoe UI", size: 16)]
+    segoe_small: nwg::Font,
+
+    #[nwg_control(text: "Show log in console", font: Some(&data.segoe_small),
         check_state: nwg::CheckBoxState::Unchecked)]
-    #[nwg_layout_item(layout: grid, row: 5, col: 0, col_span: 4)]
+    #[nwg_layout_item(layout: grid, row: 5, col: 0, col_span: 3)]
     #[nwg_events( OnButtonClick: [EmulatorGui::send_print_log] )]
     print_log_cbox: nwg::CheckBox,
 
     #[nwg_control(text: "Cycles: 0")]
-    #[nwg_layout_item(layout: grid, row: 5, col: 4, col_span: 2)]
+    #[nwg_layout_item(layout: grid, row: 5, col: 3, col_span: 3)]
     cycle_count_lbl: nwg::Label,
 
     #[nwg_control()]
@@ -204,7 +258,7 @@ pub struct EmulatorGui {
 
     #[nwg_control(parent: tab_lcd, font: Some(&data.courier_new), 
         h_align: nwg::HTextAlign::Center, text: 
-        "╔════════════════╗\n║                ║\n║                ║\n╚════════════════╝")]
+        "╔════════════════╗\n║This screen     ║\n║    is disabled.║\n╚════════════════╝")]
     #[nwg_layout_item(layout: lcd_grid, row: 0, col: 0)] 
     lcd_screen_lbl: nwg::Label,
 }
@@ -293,7 +347,7 @@ impl EmulatorGui {
                     .set_text(&lcd_screen),
                 ToGuiMessage::Stopped => {
                     self.refresh_timer.stop();
-                    
+
                     self.data.borrow_mut().cpu_running = false;
 
                     self.run_rbutton.set_enabled(false);
@@ -325,29 +379,66 @@ impl EmulatorGui {
         self.send_gui_msg(GuiToCpuMessage::Step);
     }
 
-    fn update_step_wait_time_lbl(&self, cur: usize, sel: usize) {
+    fn update_step_wait_time_lbl(&self, cur: &WaitTime, sel: &WaitTime) {
         self.step_wait_time_lbl.set_text(&format!(
-            "Wait time between steps:\nCurrent:  {}ms\nSelected: {}ms",
+            "Wait time between steps:\nCurrent:  {}\nSelected: {}",
             cur,
             sel
         ));
-    } 
+    }
+
+    fn get_next_wait_time_unit(&self) -> WaitTimeUnit {
+        match self.wait_time_milli_rbutton.check_state() {
+            nwg::RadioButtonState::Checked => WaitTimeUnit::Milli,
+            nwg::RadioButtonState::Unchecked => WaitTimeUnit::TensOfMicro,
+        }
+    }
 
     fn step_wait_time_tb_change(&self) {
-        let data = self.data.borrow_mut();
+        let data = self.data.borrow();
+        let cur = &data.cur_wait_time;
 
-        self.update_step_wait_time_lbl(data.cur_wait_time, self.step_wait_time_tb.pos());
+        self.update_step_wait_time_lbl(cur, &WaitTime {
+            time: self.step_wait_time_tb.pos(),
+            unit: self.get_next_wait_time_unit(),
+        });
+        self.wait_time_button.set_enabled(true);
+    }
+
+    fn set_wait_time_milli(&self) {
+        let data = self.data.borrow();
+        let cur = &data.cur_wait_time;
+
+        self.update_step_wait_time_lbl(cur, &WaitTime {
+            time: self.step_wait_time_tb.pos(),
+            unit: WaitTimeUnit::Milli,
+        });
+        self.wait_time_button.set_enabled(true);
+    }
+
+    fn set_wait_time_micro(&self) {
+        let data = self.data.borrow();
+        let cur = &data.cur_wait_time;
+
+        self.update_step_wait_time_lbl(cur, &WaitTime {
+            time: self.step_wait_time_tb.pos(),
+            unit: WaitTimeUnit::TensOfMicro,
+        });
         self.wait_time_button.set_enabled(true);
     }
 
     fn send_wait_time(&self) {
-        let new_wait_time = self.step_wait_time_tb.pos();
+        let new_wait_time = WaitTime {
+            time: self.step_wait_time_tb.pos(),
+            unit: self.get_next_wait_time_unit(),
+        };
 
-        self.data.borrow_mut().cur_wait_time = new_wait_time;
-        self.update_step_wait_time_lbl(new_wait_time, new_wait_time);
+        self.update_step_wait_time_lbl(&new_wait_time, &new_wait_time);
         self.wait_time_button.set_enabled(false);
 
-        self.send_gui_msg(GuiToCpuMessage::ChangeWaitTime(new_wait_time));
+        self.send_gui_msg(GuiToCpuMessage::ChangeWaitTime(new_wait_time.to_micro()));
+
+        self.data.borrow_mut().cur_wait_time = new_wait_time;
     }
 
     fn send_print_log(&self) {
@@ -371,7 +462,7 @@ pub fn run(
     let channels = UIChannels { tx, rx };
     let data = RefCell::new(UIData { 
         bin_name, 
-        cur_wait_time: DEFAULT_STEP_WAIT,
+        cur_wait_time: Default::default(),
         cpu_running: true,
     });
 

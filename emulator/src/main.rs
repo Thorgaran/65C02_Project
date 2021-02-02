@@ -5,6 +5,7 @@ extern crate chrono;
 #[macro_use]
 extern crate clap;
 extern crate timer;
+extern crate spin_sleep;
 use chrono::prelude::*;
 use std::path::Path;
 use std::fs::{File, OpenOptions};  
@@ -42,11 +43,12 @@ pub enum ToGuiMessage {
 
 fn main() {
     let matches = clap_app!(emulator =>
-        (version: "0.4.0")
+        (version: "0.5.0")
         (author: "Thorgaran <thorgaran1@gmail.com>")
         (about: "Emulate a physical w65c02s system to run, test and debug assembly programs")
         (@arg INPUT: +required "Sets the input file to use")
         (@arg log_dir_path: -l --log +takes_value "Save the logs in a file. Takes a path to the folder the log will be put in")
+        (@arg disable_lcd: -d --disablelcd "Disable the LCD screen")
     ).get_matches();
 
     let bin_path = Path::new(matches.value_of("INPUT").unwrap());
@@ -80,6 +82,8 @@ fn main() {
         None
     };
 
+    let lcd_enabled = if matches.is_present("disable_lcd") { false } else { true };
+
     let (tx_log_msgs, rx_log_msgs) = mpsc::channel();
 
     let logger = Logger::new(log_file, rx_log_msgs);
@@ -88,7 +92,7 @@ fn main() {
     let (tx_gui_msgs, rx_gui_msgs) = mpsc::channel();
     let (tx_cpu_msgs, rx_cpu_msgs) = mpsc::channel();
 
-    let system = PhysSystem::new(program, Sender::clone(&tx_log_msgs), tx_cpu_msgs, rx_gui_msgs);
+    let system = PhysSystem::new(program, lcd_enabled, Sender::clone(&tx_log_msgs), tx_cpu_msgs, rx_gui_msgs);
     let system_handle = system.run();
 
     gui::run(tx_gui_msgs, rx_cpu_msgs, String::from(bin_path

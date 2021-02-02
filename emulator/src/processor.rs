@@ -14,8 +14,9 @@ pub struct PhysSystem {
     tx_log_msgs: Sender<LogMessage>,
     tx_to_gui: Sender<ToGuiMessage>,
     rx_from_gui: Receiver<GuiToCpuMessage>,
-    tx_to_lcd: Sender<CpuToLcdMessage>,
-    lcd_handle: JoinHandle<()>,
+    lcd_enabled: bool,
+    tx_to_lcd: Option<Sender<CpuToLcdMessage>>,
+    lcd_handle: Option<JoinHandle<()>>,
 }
 
 /// A system with 16K of RAM, 32K of programmable (EEP)ROM,
@@ -23,14 +24,19 @@ pub struct PhysSystem {
 impl PhysSystem {
     pub fn new(
         program: [u8; 32_768],
+        lcd_enabled: bool,
         tx_log_msgs: Sender<LogMessage>,
         tx_to_gui: Sender<ToGuiMessage>,
         rx_from_gui: Receiver<GuiToCpuMessage>
     ) -> PhysSystem {
-        let (tx_to_lcd, rx_from_cpu) = mpsc::channel();
-        let lcd = LCD::new(Sender::clone(&tx_log_msgs), Sender::clone(&tx_to_gui));
+        let (tx_to_lcd, lcd_handle) = if lcd_enabled {
+            let (tx_to_lcd, rx_from_cpu) = mpsc::channel();
+            let lcd = LCD::new(Sender::clone(&tx_log_msgs), Sender::clone(&tx_to_gui));
 
-        let lcd_handle = lcd.run(rx_from_cpu);
+            (Some(tx_to_lcd), Some(lcd.run(rx_from_cpu)))
+        } else {
+            (None, None)
+        };
         
         let mut mem: [u8; 65_536] = [0xFF; 65_536];
         // Insert the program into the second half of mem
@@ -39,12 +45,13 @@ impl PhysSystem {
         PhysSystem { 
             mem,
             via: W65C22S::new(),
-            step_wait_time: DEFAULT_STEP_WAIT,
+            step_wait_time: DEFAULT_STEP_WAIT * 1000,
             cycle_count: 0,
             step_count: 0,
             tx_log_msgs,
             tx_to_gui,
             rx_from_gui,
+            lcd_enabled,
             tx_to_lcd,
             lcd_handle,
         }
@@ -71,7 +78,7 @@ impl PhysSystem {
                         if self.step(&mut cpu) == State::Stopped {
                             break 'cpu_thread_main;
                         }
-                        thread::sleep(time::Duration::from_millis(self.step_wait_time as u64));
+                        spin_sleep::sleep(time::Duration::from_micros(self.step_wait_time as u64));
                     },
                     GuiToCpuMessage::Step => if self.step(&mut cpu) == State::Stopped {
                         break 'cpu_thread_main;
@@ -90,8 +97,10 @@ impl PhysSystem {
             send_cpu_msg(&self.tx_to_gui, ToGuiMessage::CycleCount(self.cycle_count));
             send_cpu_msg(&self.tx_to_gui, ToGuiMessage::Stopped);
 
-            self.tx_to_lcd.send(CpuToLcdMessage::Exit).expect("LCD thread has hung up");
-            self.lcd_handle.join().unwrap();
+            if self.lcd_enabled {
+                self.tx_to_lcd.unwrap().send(CpuToLcdMessage::Exit).expect("LCD thread has hung up");
+                self.lcd_handle.unwrap().join().unwrap();
+            }
 
             thread::sleep(time::Duration::from_millis(500));
         }).unwrap()
@@ -211,7 +220,7 @@ impl W65C22S {
     fn write(&mut self, 
         tx_log_msgs: &Sender<LogMessage>, 
         tx_to_gui: &Sender<ToGuiMessage>,
-        tx_to_lcd: &Sender<CpuToLcdMessage>,
+        tx_to_lcd: &Option<Sender<CpuToLcdMessage>>,
         addr: u8, 
         value: u8
     ) {
@@ -229,8 +238,10 @@ impl W65C22S {
                         rw: if self.pb & 0b0100_0000 == 0 { false } else { true },
                         data: (self.pb & 0b0000_1111) << 4,
                     };
-                    tx_to_lcd.send(CpuToLcdMessage::PinChange(lcd_pins))
-                        .expect("LCD thread has hung up");
+                    if let Some(tx) = tx_to_lcd {
+                        tx.send(CpuToLcdMessage::PinChange(lcd_pins))
+                            .expect("LCD thread has hung up");
+                    }
                 }
             },
             PORTA => {
