@@ -129,10 +129,6 @@ reset:  ldx #$ff
 
         jsr lcd_init    ;Set up LCD screen
 
-        lda #%11111111  ;Set output A pins 
-        sta DDRA        ;Initialize Port A to full output
-        sta PORTA       ;Light all A pins for debug
-
         lda #<msg
         sta MSG_PTR
         lda #>msg
