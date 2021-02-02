@@ -120,41 +120,37 @@ impl PhysSystem {
 
         thread::Builder::new().name("SYS thread".to_string()).spawn(move || {
             'sys_thread_main: loop {
-                match self.rx_sys_msgs.recv().expect("GUI thread has hung up") {
-                    ToSysMessage::Run => {
-                        self.currently_running = true;
-                        'run: loop {
-                            match self.rx_sys_msgs.try_recv() {
-                                Err(TryRecvError::Disconnected) => panic!("GUI thread has hung up"),
-                                Ok(ToSysMessage::Stop) => {
-                                    self.currently_running = false;
-                                    break 'run;
-                                },
-                                Ok(ToSysMessage::ChangeWaitTime(new_wait_time)) => self.step_wait_time = new_wait_time,
-                                Ok(ToSysMessage::ShowLog(print_log)) => self.tx_log_msgs.send(
-                                    LogMessage::ChangePrintLog(print_log)
-                                ).expect("Logger thread has hung up"),
-                                Ok(ToSysMessage::Exit) => break 'sys_thread_main,
-                                // If there are no messages or the message is "step" or "run", continue running
-                                _ => {},
-                            }
-                            if self.step(&mut cpu) == State::Stopped {
-                                break 'sys_thread_main;
-                            }
-                            spin_sleep::sleep(time::Duration::from_micros(self.step_wait_time as u64));
+                let sys_message = match self.currently_running {
+                    true => {
+                        if self.step(&mut cpu) == State::Stopped {
+                            break 'sys_thread_main;
                         };
+                        spin_sleep::sleep(time::Duration::from_micros(self.step_wait_time as u64));
+
+                        let sys_message = self.rx_sys_msgs.try_recv();
+                        if let Err(err) = sys_message { match err {
+                            TryRecvError::Disconnected => panic!("GUI thread has hung up"),
+                            TryRecvError::Empty => continue 'sys_thread_main,
+                        }};
+                        sys_message.unwrap()
                     },
-                    ToSysMessage::Step => if self.step(&mut cpu) == State::Stopped {
+                    false => self.rx_sys_msgs.recv().expect("GUI thread has hung up"),
+                };
+                
+                match (sys_message, self.currently_running) {
+                    (ToSysMessage::Run, false) => self.currently_running = true,
+                    (ToSysMessage::Stop, true) => self.currently_running = false,
+                    (ToSysMessage::Step, false) => if self.step(&mut cpu) == State::Stopped {
                         break 'sys_thread_main;
                     },
-                    ToSysMessage::ChangeWaitTime(new_wait_time) => self.step_wait_time = new_wait_time,
-                    ToSysMessage::ShowLog(print_log) => self.tx_log_msgs.send(
+                    (ToSysMessage::ChangeWaitTime(new_wait_time), _) => self.step_wait_time = new_wait_time,
+                    (ToSysMessage::ShowLog(print_log), _) => self.tx_log_msgs.send(
                         LogMessage::ChangePrintLog(print_log)
                     ).expect("Logger thread has hung up"),
-                    ToSysMessage::Breakpoint(pa_as_breakpoint) => self.pa_as_breakpoint = pa_as_breakpoint,
-                    ToSysMessage::Exit => break 'sys_thread_main,
+                    (ToSysMessage::Breakpoint(pa_as_breakpoint), _) => self.pa_as_breakpoint = pa_as_breakpoint,
+                    (ToSysMessage::Exit, _) => break 'sys_thread_main,
                     _ => {},
-                }
+                };
             };
 
             log!(self.tx_log_msgs, "\n\nTotal cycle count: {}", self.cycle_count);

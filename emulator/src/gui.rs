@@ -223,11 +223,11 @@ pub struct EmulatorGui {
     #[nwg_control(parent: tab_leds, text: "Use as breakpoint", font: Some(&data.segoe_small),
         check_state: nwg::CheckBoxState::Checked)]
     #[nwg_layout_item(layout: led_grid, row: 3, col: 1)]
+    #[nwg_events( OnButtonClick: [EmulatorGui::send_breakpoint] )]
     port_a_breakpoint_cbox: nwg::CheckBox,
 
     #[nwg_control(parent: tab_leds)]
     #[nwg_layout_item(layout: led_grid, row: 4, col: 0, row_span: 2, col_span: 2)]
-    #[nwg_events( OnButtonClick: [EmulatorGui::send_breakpoint] )]
     port_a_frame: nwg::Frame,
 
     #[nwg_layout(parent: port_a_frame, spacing: 1)]
@@ -470,7 +470,7 @@ impl EmulatorGui {
     }
 
     fn send_breakpoint(&self) {
-        self.send_gui_msg(ToSysMessage::Breakpoint(match self.print_log_cbox.check_state() {
+        self.send_gui_msg(ToSysMessage::Breakpoint(match self.port_a_breakpoint_cbox.check_state() {
             nwg::CheckBoxState::Checked => true,
             nwg::CheckBoxState::Unchecked => false,
             nwg::CheckBoxState::Indeterminate => panic!("CheckBox in indeterminate state"),
