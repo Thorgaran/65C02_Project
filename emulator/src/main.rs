@@ -24,7 +24,7 @@ use gui::ToGuiMessage;
 
 fn main() {
     let matches = clap_app!(emulator =>
-        (version: "0.5.3")
+        (version: "0.5.4")
         (author: "Thorgaran <thorgaran1@gmail.com>")
         (about: "Emulate a physical w65c02s system to run, test and debug assembly programs")
         (@arg INPUT: +required "Sets the input file to use")
@@ -84,8 +84,12 @@ fn main() {
         .unwrap()
     ));
 
+    print!("Waiting for SYS thread to end... ");
     system_handle.join().unwrap();
+    println!("SYS thread ended");
 
     tx_log_msgs.send(LogMessage::Exit).expect("Logger thread has hung up");
+    print!("Waiting for logger thread to end... ");
     logger_handle.join().unwrap();
+    println!("logger thread ended");
 }

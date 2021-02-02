@@ -60,6 +60,8 @@ pub struct PhysSystem {
     step_wait_time: usize,
     opcode_fetching: bool,
     cycle_count: usize,
+    sent_cycle_count: usize,
+    gui_port_update_allowed: RefCell<bool>,
     step_count: usize,
     currently_running: bool,
     pa_as_breakpoint: bool,
@@ -102,6 +104,8 @@ impl PhysSystem {
             step_wait_time: DEFAULT_STEP_WAIT * 1000,
             opcode_fetching: false,
             cycle_count: 0,
+            sent_cycle_count: 0,
+            gui_port_update_allowed: RefCell::new(true),
             step_count: 0,
             currently_running: false,
             pa_as_breakpoint: true,
@@ -117,6 +121,7 @@ impl PhysSystem {
 
     pub fn run(mut self) -> thread::JoinHandle<()> {
         let mut cpu = W65C02S::new();
+        let mut gui_running = true;
 
         thread::Builder::new().name("SYS thread".to_string()).spawn(move || {
             'sys_thread_main: loop {
@@ -139,7 +144,10 @@ impl PhysSystem {
                 
                 match (sys_message, self.currently_running) {
                     (ToSysMessage::Run, false) => self.currently_running = true,
-                    (ToSysMessage::Stop, true) => self.currently_running = false,
+                    (ToSysMessage::Stop, true) => {
+                        self.currently_running = false;
+                        self.update_gui();
+                    },
                     (ToSysMessage::Step, false) => if self.step(&mut cpu) == State::Stopped {
                         break 'sys_thread_main;
                     },
@@ -148,31 +156,61 @@ impl PhysSystem {
                         LogMessage::ChangePrintLog(print_log)
                     ).expect("Logger thread has hung up"),
                     (ToSysMessage::Breakpoint(pa_as_breakpoint), _) => self.pa_as_breakpoint = pa_as_breakpoint,
-                    (ToSysMessage::Exit, _) => break 'sys_thread_main,
+                    (ToSysMessage::Exit, _) => {
+                        gui_running = false;
+                        break 'sys_thread_main;
+                    },
                     _ => {},
                 };
             };
 
             log!(self.tx_log_msgs, "\n\nTotal cycle count: {}", self.cycle_count);
 
-            self.send_gui_msg(ToGuiMessage::CycleCount(self.cycle_count));
-            self.send_gui_msg(ToGuiMessage::Stopped);
+            if gui_running {
+                self.update_gui();
+                self.send_gui_msg(ToGuiMessage::Stopped);
+            }
 
             if self.lcd_enabled {
                 self.tx_to_lcd.unwrap().send(SysToLcdMessage::Exit).expect("LCD thread has hung up");
+                print!("Waiting for LCD thread to end... ");
                 self.lcd_handle.unwrap().join().unwrap();
+                println!("LCD thread ended");
             }
-
-            thread::sleep(time::Duration::from_millis(500));
         }).unwrap()
     }
 
     fn step(&mut self, cpu: &mut W65C02S) -> State {
-        self.send_gui_msg(ToGuiMessage::CycleCount(self.cycle_count));
+        let required_delta = 
+            if self.step_wait_time == 0 { 100_000 }
+            else if self.step_wait_time <= 100 { 10_000 }
+            else if self.step_wait_time <= 1_000 { 1_000 }
+            else if self.step_wait_time <= 10_000 { 100 }
+            else { 0 };
+
+        if self.cycle_count > self.sent_cycle_count + required_delta || !self.currently_running {
+            self.sent_cycle_count = self.cycle_count;
+            self.send_gui_msg(ToGuiMessage::CycleCount(self.cycle_count));
+
+            *self.gui_port_update_allowed.borrow_mut() = true;
+            if self.lcd_enabled {
+                self.tx_to_lcd.as_ref().unwrap().send(SysToLcdMessage::AllowGuiUpdate)
+                    .expect("LCD thread has hung up");
+            }
+        }
+
         self.opcode_fetching = true;
         log!(self.tx_log_msgs, "\nStep {}:", self.step_count);
         self.step_count += 1;
         cpu.step(self)
+    }
+
+    fn update_gui(&self) {
+        self.send_gui_msg(ToGuiMessage::CycleCount(self.cycle_count));
+        self.send_gui_msg(ToGuiMessage::PortB(self.via.borrow().pb));
+        self.send_gui_msg(ToGuiMessage::PortA(self.via.borrow().pa));
+        self.tx_to_lcd.as_ref().unwrap().send(SysToLcdMessage::ForceGuiUpdate)
+            .expect("LCD thread has hung up");
     }
 
     fn send_gui_msg(&self, msg: ToGuiMessage) {
@@ -295,7 +333,10 @@ impl W65C22S {
                 self.orb = value;
                 // Only change the bit of PB when DDRB = 1 (output)
                 self.pb = (self.pb | self.ddrb) & (value | !self.ddrb);
-                system.send_gui_msg(ToGuiMessage::PortB(self.pb));
+                if *system.gui_port_update_allowed.borrow() {
+                    system.send_gui_msg(ToGuiMessage::PortB(self.pb));
+                    *system.gui_port_update_allowed.borrow_mut() = false;
+                }
                 log!(system.tx_log_msgs, " -> PORT B: {:#010b} {:#04x} {}", self.pb, self.pb, self.pb);
                 // Only send data to the LCD when the enable pin is set
                 if self.pb & 0b0010_0000 == 0b0010_0000 {
@@ -314,7 +355,10 @@ impl W65C22S {
                 self.ora = value;
                 // Only change the bit of PA when DDRA = 1 (output)
                 self.pa = (self.pa | self.ddra) & (value | !self.ddra);
-                system.send_gui_msg(ToGuiMessage::PortA(self.pa));
+                if *system.gui_port_update_allowed.borrow() {
+                    system.send_gui_msg(ToGuiMessage::PortA(self.pa));
+                    *system.gui_port_update_allowed.borrow_mut() = false;
+                }
                 log!(system.tx_log_msgs, " -> PORT A: {:#010b} {:#04x} {}", self.pa, self.pa, self.pa);
                 if system.pa_as_breakpoint && system.currently_running {
                     system.tx_sys_msgs.send(ToSysMessage::Stop).expect("Self SYS thread has hung up!?!");

@@ -373,9 +373,12 @@ impl EmulatorGui {
                     self.run_rbutton.set_enabled(false);
                     self.stop_rbutton.set_enabled(false);
                     self.step_button.set_enabled(false);
+                    self.wait_time_micro_rbutton.set_enabled(false);
+                    self.wait_time_milli_rbutton.set_enabled(false);
                     self.wait_time_button.set_enabled(false);
                     self.step_wait_time_tb.set_enabled(false);
                     self.print_log_cbox.set_enabled(false);
+                    self.port_a_breakpoint_cbox.set_enabled(false);
 
                     nwg::modal_info_message(&self.window, "CPU stopped", 
                         "The CPU is done executing the program.\nClose the main window to exit."

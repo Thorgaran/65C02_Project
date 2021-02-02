@@ -23,6 +23,8 @@ const FONT_TABLE: [char; 256] = [
 
 pub enum SysToLcdMessage {
     PinChange(LCDPins),
+    AllowGuiUpdate,
+    ForceGuiUpdate,
     Exit,
 }
 
@@ -74,6 +76,7 @@ pub struct LCD {
     ddram_addr: u8,
     config: LCDConfig,
     waiting_for_more_data: bool,
+    gui_update_allowed: bool,
     tx_log_msgs: Sender<LogMessage>,
     tx_to_gui: Sender<ToGuiMessage>,
 }
@@ -107,6 +110,7 @@ impl LCD {
                 display_behavior: DisplayBehavior::MoveCursor,
             },
             waiting_for_more_data: false,
+            gui_update_allowed: true,
             tx_log_msgs,
             tx_to_gui,
         };
@@ -161,6 +165,10 @@ impl LCD {
                             self.read_pins();
                         }
                     },
+                    Ok(SysToLcdMessage::AllowGuiUpdate) => self.gui_update_allowed = true,
+                    Ok(SysToLcdMessage::ForceGuiUpdate) => self.tx_to_gui
+                        .send(ToGuiMessage::LcdScreen(self.screen.clone()))
+                        .expect("GUI thread has hung up"),
                     Ok(SysToLcdMessage::Exit) => break 'lcd_thread_main,
                 }};
             }
@@ -222,8 +230,12 @@ impl LCD {
     
         self.screen = new_screen;
         log!(self.tx_log_msgs, "\n{}", self.screen);
-        self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
-            .expect("GUI thread has hung up");
+        
+        if self.gui_update_allowed {
+            self.gui_update_allowed = false;
+            self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
+                .expect("GUI thread has hung up");
+        }
     }
     
     fn cursor_display_shift(&mut self, shift_dir: ShiftDir, display_behavior: DisplayBehavior) {
