@@ -5,10 +5,46 @@ use crate::{GuiToCpuMessage, ToGuiMessage, DEFAULT_STEP_WAIT};
 use crate::logger::LogMessage;
 use crate::lcd::{LCD, CpuToLcdMessage, LCDPins};
 
+const OPCODES: [&str; 256] = [
+    "BRK",     "ORA i_zp_x", "<invalid: NOP imm>", "<invalid: NOP>", "TSB zp",              "ORA zp",    "ASL zp",    "RMB0 zp", 
+    "PHP",     "ORA imm",    "ASL",                "<invalid: NOP>", "TSB abs",             "ORA abs",   "ASL abs",   "BBR0 zp_rel",
+    "BPL rel", "ORA i_zp_y", "ORA i_zp",           "<invalid: NOP>", "TRB zp",              "ORA zp_x",  "ASL zp_x",  "RMB1 zp", 
+    "CLC",     "ORA abs_y",  "INC",                "<invalid: NOP>", "TRB abs",             "ORA abs_x", "ASL abs_x", "BBR1 zp_rel",
+    "JSR abs", "AND i_zp_y", "<invalid: NOP imm>", "<invalid: NOP>", "BIT zp",              "AND zp",    "ROL zp",    "RMB2 zp", 
+    "PLP",     "AND imm",    "ROL",                "<invalid: NOP>", "BIT abs",             "AND abs",   "ROL abs",   "BBR2 zp_rel",
+    "BMI rel", "AND i_zp_y", "AND i_zp",           "<invalid: NOP>", "BIT zp_x",            "AND zp_x",  "ROL zp_x",  "RMB3 zp", 
+    "SEC",     "AND abs_y",  "DEC",                "<invalid: NOP>", "BIT abs_x",           "AND abs_x", "ROL abs_x", "BBR3 zp_rel",
+    "RTI",     "EOR i_zp_x", "<invalid: NOP imm>", "<invalid: NOP>", "<invalid: NOP zp>",   "EOR zp",    "LSR zp",    "RMB4 zp", 
+    "PHA",     "EOR imm",    "LSR",                "<invalid: NOP>", "JMP abs",             "EOR abs",   "LSR abs",   "BBR4 zp_rel",
+    "BVC rel", "EOR i_zp_y", "EOR i_zp",           "<invalid: NOP>", "<invalid: NOP zp_x>", "EOR zp_x",  "LSR zp_x",  "RMB5 zp", 
+    "CLI",     "EOR abs_y",  "PHY",                "<invalid: NOP>", "<invalid: NOP abs>",  "EOR abs_x", "LSR abs_x", "BBR5 zp_rel",
+    "RTS",     "ADC i_zp_x", "<invalid: NOP imm>", "<invalid: NOP>", "STZ zp",              "ADC zp",    "ROR zp",    "RMB6 zp", 
+    "PLA",     "ADC imm",    "ROR",                "<invalid: NOP>", "JMP ind",             "ADC abs",   "ROR abs",   "BBR6 zp_rel",
+    "BVS rel", "ADC i_zp_y", "ADC i_zp",           "<invalid: NOP>", "STZ zp_x",            "ADC zp_x",  "ROR zp_x",  "RMB7 zp", 
+    "SEI",     "ADC abs_y",  "PLY",                "<invalid: NOP>", "JMP ind_x",           "ADC abs_x", "ROR abs_x", "BBR7 zp_rel",
+    "BRA rel", "STA i_zp_x", "<invalid: NOP imm>", "<invalid: NOP>", "STY zp",              "STA zp",    "STX zp",    "SMB0 zp", 
+    "DEY",     "BIT imm",    "TXA",                "<invalid: NOP>", "STY abs",             "STA abs",   "STX abs",   "BBS0 zp_rel",
+    "BCC rel", "STA i_zp_y", "STA i_zp",           "<invalid: NOP>", "STY zp_x",            "STA zp_x",  "STX zp_y",  "SMB1 zp", 
+    "TYA",     "STA abs_y",  "TXS",                "<invalid: NOP>", "STZ abs",             "STA abs_x", "STZ abs_x", "BBS1 zp_rel",
+    "LDY imm", "LDA i_zp_x", "LDX imm",            "<invalid: NOP>", "LDY zp",              "LDA zp",    "LDX zp",    "SMB2 zp", 
+    "TAY",     "LDA imm",    "TAX",                "<invalid: NOP>", "LDY abs",             "LDA abs",   "LDX abs",   "BBS2 zp_rel",
+    "BCS rel", "LDA i_zp_y", "LDA i_zp",           "<invalid: NOP>", "LDY zp_x",            "LDA zp_x",  "LDX zp_y",  "SMB3 zp", 
+    "CLV",     "LDA abs_y",  "TSX",                "<invalid: NOP>", "LDY abs_x",           "LDA abs_x", "LDX abs_y", "BBS3 zp_rel",
+    "CPY imm", "CMP i_zp_x", "<invalid: NOP imm>", "<invalid: NOP>", "CPY zp",              "CMP zp",    "DEC zp",    "SMB4 zp", 
+    "INY",     "CMP imm",    "DEX",                "WAI",            "CPY abs",             "CMP abs",   "DEC abs",   "BBS4 zp_rel",
+    "BNE rel", "CMP i_zp_y", "CMP i_zp",           "<invalid: NOP>", "<invalid: NOP zp_x>", "CMP zp_x",  "DEC zp_x",  "SMB5 zp", 
+    "CLD",     "CMP abs_y",  "PHX",                "STP",            "<invalid: NOP abs>",  "CMP abs_x", "DEC abs_x", "BBS5 zp_rel",
+    "CPX imm", "SBC i_zp_x", "<invalid: NOP imm>", "<invalid: NOP>", "CPX zp",              "SBC zp",    "INC zp",    "SMB6 zp", 
+    "INX",     "SBC imm",    "NOP",                "<invalid: NOP>", "CPX abs",             "SBC abs",   "INC abs",   "BBS6 zp_rel",
+    "BEQ rel", "SBC i_zp_y", "SBC i_zp",           "<invalid: NOP>", "<invalid: NOP zp_x>", "SBC zp_x",  "INC zp_x",  "SMB7 zp", 
+    "SED",     "SBC abs_y",  "PLX",                "<invalid: NOP>", "<invalid: NOP abs>",  "SBC abs_x", "INC abs_x", "BBS7 zp_rel",
+];
+
 pub struct PhysSystem {
     mem: [u8; 65_536],
     via: W65C22S,
     step_wait_time: usize,
+    opcode_fetching: bool,
     cycle_count: usize,
     step_count: usize,
     tx_log_msgs: Sender<LogMessage>,
@@ -46,6 +82,7 @@ impl PhysSystem {
             mem,
             via: W65C22S::new(),
             step_wait_time: DEFAULT_STEP_WAIT * 1000,
+            opcode_fetching: false,
             cycle_count: 0,
             step_count: 0,
             tx_log_msgs,
@@ -108,6 +145,7 @@ impl PhysSystem {
 
     fn step(&mut self, cpu: &mut W65C02S) -> State {
         send_cpu_msg(&self.tx_to_gui, ToGuiMessage::CycleCount(self.cycle_count));
+        self.opcode_fetching = true;
         log!(self.tx_log_msgs, "\nStep {}:", self.step_count);
         self.step_count += 1;
         cpu.step(self)
@@ -134,6 +172,10 @@ impl System for PhysSystem {
             },
         };
         log!(self.tx_log_msgs, "\n    READ  {:02x} at {:04x}", value, addr);
+        if self.opcode_fetching {
+            self.opcode_fetching = false;
+            log!(self.tx_log_msgs, " {}", OPCODES[value as usize]);
+        }
         value
     }
 

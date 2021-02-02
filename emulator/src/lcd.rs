@@ -221,7 +221,7 @@ impl LCD {
         new_screen.push_str("║\n╚════════════════╝");
     
         self.screen = new_screen;
-        log!(self.tx_log_msgs, "\nDISPLAY_ADDR:{}\n{}", self.display_addr, self.screen);
+        log!(self.tx_log_msgs, "\n{}", self.screen);
         self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
             .expect("GUI thread has hung up");
     }

@@ -43,7 +43,7 @@ pub enum ToGuiMessage {
 
 fn main() {
     let matches = clap_app!(emulator =>
-        (version: "0.5.0")
+        (version: "0.5.1")
         (author: "Thorgaran <thorgaran1@gmail.com>")
         (about: "Emulate a physical w65c02s system to run, test and debug assembly programs")
         (@arg INPUT: +required "Sets the input file to use")
