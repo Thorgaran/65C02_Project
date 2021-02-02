@@ -1,4 +1,4 @@
-SAVE_X  = $0000
+MSG_PTR = $00
 
 VIA     = $6000
 PORTB   = VIA
@@ -33,8 +33,8 @@ lcd_init:
 
         rts
 
-lcd_send_1:
-        stx SAVE_X      ;Save X contents in RAM
+lcd_cmd:
+        phx             ;Save X contents on stack
         tax             ;Save command into X
         
         lsr
@@ -42,9 +42,6 @@ lcd_send_1:
         lsr
         lsr             ;Shift the 4 high-order bits into the low 4 bits
 
-        rts
-
-lcd_send_2:
         sta PORTB       ;Send first half of the command
 
         ora #LED_E
@@ -54,10 +51,7 @@ lcd_send_2:
 
         txa             ;Retrieve saved command
         and #%00001111  ;Keep the 4 low-order bits
-
-        rts
-
-lcd_send_3:
+        
         sta PORTB       ;Send second half of the command
 
         ora #LED_E
@@ -65,24 +59,64 @@ lcd_send_3:
         and #~LED_E
         sta PORTB       ;Send pulse on the Enable pin of the LCD
 
-        ldx SAVE_X      ;Retrieve X contents from RAM
-
-        rts
-
-lcd_cmd:
-        jsr lcd_send_1
-        jsr lcd_send_2
-        jsr lcd_send_3
-
+        plx             ;Retrieve X contents from stack
         rts
 
 lcd_data:
-        jsr lcd_send_1
-        ora #LED_RS
-        jsr lcd_send_2
-        ora #LED_RS
-        jsr lcd_send_3
+        phx             ;Save X contents on stack
+        tax             ;Save command into X
+        
+        lsr
+        lsr
+        lsr
+        lsr             ;Shift the 4 high-order bits into the low 4 bits
 
+        ora #LED_RS
+        sta PORTB       ;Send first half of the command
+
+        ora #LED_E
+        sta PORTB
+        and #~LED_E
+        sta PORTB       ;Send pulse on the Enable pin of the LCD
+
+        txa             ;Retrieve saved command
+        and #%00001111  ;Keep the 4 low-order bits
+        
+        ora #LED_RS
+        sta PORTB       ;Send second half of the command
+
+        ora #LED_E
+        sta PORTB
+        and #~LED_E
+        sta PORTB       ;Send pulse on the Enable pin of the LCD
+
+        plx             ;Retrieve X contents from stack
+        rts
+
+lcd_print:
+        phy             ;Save Y contents on stack
+        ldy #0
+lcd_print_line1:
+        lda (MSG_PTR), Y;Follow the pointer to the message
+        beq lcd_print_next
+        jsr lcd_data    ;Print char
+        iny             ;Set index to next char
+        jmp lcd_print_line1
+lcd_print_next:
+        iny             ;Set index to next char
+        lda (MSG_PTR), Y;Read first char of 2nd line
+        beq lcd_end     ;If the 2nd line is empty, shortcut to the end
+        
+        lda #($80|$40)  ;Set DDRAM address
+        jsr lcd_cmd     ;Send cursor to 2nd line
+lcd_print_line2:
+        lda (MSG_PTR), Y;Follow the pointer to the message
+        beq lcd_end
+        jsr lcd_data    ;Print char
+        iny             ;Set index to next char
+        jmp lcd_print_line2
+lcd_end:
+        ply             ;Retrieve Y contents from stack
         rts
         
 irq:
@@ -91,38 +125,24 @@ reset:  ldx #$ff
         txs             ;Initialize stack pointer to address 01ff
         
         lda #%11101111  ;Set output B pins 
-        sta DDRB        ;Initialize Port B to one input and #full output
+        sta DDRB        ;Initialize Port B to one input and full output
 
         jsr lcd_init    ;Set up LCD screen
 
-        lda #"H"
-        jsr lcd_data
-        lda #"e"
-        jsr lcd_data
-        lda #"l"
-        jsr lcd_data
-        lda #"l"
-        jsr lcd_data
-        lda #"o"
-        jsr lcd_data
-        lda #","
-        jsr lcd_data
-        lda #" "
-        jsr lcd_data
-        lda #"W"
-        jsr lcd_data
-        lda #"o"
-        jsr lcd_data
-        lda #"r"
-        jsr lcd_data
-        lda #"l"
-        jsr lcd_data
-        lda #"d"
-        jsr lcd_data
-        lda #"!"
-        jsr lcd_data
+        lda #%11111111  ;Set output A pins 
+        sta DDRA        ;Initialize Port A to full output
+        sta PORTA       ;Light all A pins for debug
+
+        lda #<msg
+        sta MSG_PTR
+        lda #>msg
+        sta MSG_PTR + 1
+        jsr lcd_print
 
         stp
+
+msg:    .string "Hello, world!"
+        .string ""
 
         .blk 3, $ea
 
