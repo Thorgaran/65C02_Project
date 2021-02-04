@@ -34,6 +34,9 @@ lcd_init:
         lda #%00000001  ;Screen clear
         jsr lcd_cmd
 
+        lda #%00001110  ;Display switch: display ON, cursor ON, blink OFF
+        jsr lcd_cmd
+
         rts
 
 ;Send the contents of A as a command to the LCD
@@ -317,9 +320,6 @@ reset:  ldx #$ff
         
         lda #%11101111  ;Set output B pins 
         sta DDRB        ;Initialize Port B to one input and full output
-
-        lda #%11111111  ;DEBUG
-        sta DDRA        ;DEBUG
 
         jsr lcd_init    ;Set up LCD screen
         
