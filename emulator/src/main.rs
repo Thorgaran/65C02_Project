@@ -24,7 +24,7 @@ use gui::ToGuiMessage;
 
 fn main() {
     let matches = clap_app!(emulator =>
-        (version: "0.5.4")
+        (version: "0.5.5")
         (author: "Thorgaran <thorgaran1@gmail.com>")
         (about: "Emulate a physical w65c02s system to run, test and debug assembly programs")
         (@arg INPUT: +required "Sets the input file to use")

@@ -39,6 +39,7 @@ pub struct LCDPins {
 enum DataLength { Eigth, Four }
 enum NbLines { Two, One }
 enum Font { FiveByTen, FiveByEight }
+#[derive(PartialEq, Clone)]
 enum DisplayState { On, Off }
 #[derive(PartialEq)]
 enum CursorState { On, Off }
@@ -115,6 +116,7 @@ impl LCD {
             tx_to_gui,
         };
         lcd.update_screen();
+        lcd.config.display_state = DisplayState::Off;
         lcd
     }
 
@@ -166,9 +168,12 @@ impl LCD {
                         }
                     },
                     Ok(SysToLcdMessage::AllowGuiUpdate) => self.gui_update_allowed = true,
-                    Ok(SysToLcdMessage::ForceGuiUpdate) => self.tx_to_gui
-                        .send(ToGuiMessage::LcdScreen(self.screen.clone()))
-                        .expect("GUI thread has hung up"),
+                    Ok(SysToLcdMessage::ForceGuiUpdate) => {
+                        if self.config.display_state == DisplayState::On {
+                            self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
+                            .expect("GUI thread has hung up");
+                        }
+                    },
                     Ok(SysToLcdMessage::Exit) => break 'lcd_thread_main,
                 }};
             }
@@ -229,12 +234,15 @@ impl LCD {
         new_screen.push_str("║\n╚════════════════╝");
     
         self.screen = new_screen;
-        log!(self.tx_log_msgs, "\n{}", self.screen);
+
+        if self.config.display_state == DisplayState::On {
+            log!(self.tx_log_msgs, "\n{}", self.screen);
         
-        if self.gui_update_allowed {
-            self.gui_update_allowed = false;
-            self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
-                .expect("GUI thread has hung up");
+            if self.gui_update_allowed {
+                self.gui_update_allowed = false;
+                self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
+                    .expect("GUI thread has hung up");
+            }
         }
     }
     
@@ -366,7 +374,11 @@ impl LCD {
                             Font::FiveByTen
                         };
                         self.ddram_data = [0x20; 0x80];
+
+                        let display_state = self.config.display_state.clone();
+                        self.config.display_state = DisplayState::On;
                         self.update_screen();
+                        self.config.display_state = display_state;
                     }
                 },
                 // Set CGRAM address
