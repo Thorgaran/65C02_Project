@@ -6,7 +6,7 @@ use std::sync::mpsc::Receiver;
 #[macro_export]
 macro_rules! log {
     ($tx:expr, $msg:expr $(,)?) => ({ 
-        $tx.send(LogMessage::Log($msg)).expect("Logger thread has hung up");
+        $tx.send(LogMessage::Log(String::from($msg))).expect("Logger thread has hung up");
     });
     ($tx:expr, $fmt:expr, $($arg:tt)+) => ({
         $tx.send(LogMessage::Log(format!($fmt, $($arg)+)))
