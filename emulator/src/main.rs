@@ -16,11 +16,10 @@ use std::sync::mpsc::{self, Sender};
 #[macro_use]
 pub mod logger;
 pub mod system;
-pub mod lcd;
 pub mod gui;
 
 use logger::{Logger, LogMessage};
-use system::{DEFAULT_STEP_WAIT, ToSysMessage, Data, PhysSystem};
+use system::{DEFAULT_STEP_WAIT, ToSysMessage, PhysSystem};
 use gui::ToGuiMessage;
 
 pub struct Config {
@@ -30,7 +29,7 @@ pub struct Config {
 
 fn main() {
     let matches = clap_app!(emulator =>
-        (version: "0.6.0")
+        (version: "0.6.1")
         (author: "Thorgaran <thorgaran1@gmail.com>")
         (about: "Emulate a physical w65c02s system to run, test and debug assembly programs")
         (@arg INPUT: +required "Sets the input file to use")
@@ -83,8 +82,8 @@ fn main() {
     let (tx_sys_msgs, rx_sys_msgs) = mpsc::channel();
     let (tx_gui_msgs, rx_gui_msgs) = mpsc::channel();
 
-    let system = PhysSystem::new(config, program, Sender::clone(&tx_log_msgs), 
-        tx_gui_msgs, Sender::clone(&tx_sys_msgs), rx_sys_msgs);
+    let system = PhysSystem::new(config, program, 
+        Sender::clone(&tx_log_msgs), tx_gui_msgs, rx_sys_msgs);
     let system_handle = system.run();
 
     gui::run(tx_sys_msgs, rx_gui_msgs, String::from(bin_path

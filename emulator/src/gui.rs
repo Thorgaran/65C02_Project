@@ -2,11 +2,11 @@ use nwg::NativeUi;
 use nwd::NwgUi;
 use std::sync::mpsc::{self, Sender, Receiver, TryRecvError};
 use std::cell::RefCell;
-use crate::{ToSysMessage, DEFAULT_STEP_WAIT, Data};
+use crate::{ToSysMessage, DEFAULT_STEP_WAIT};
 
 pub enum ToGuiMessage {
-    PortB(Data<u8>),
-    PortA(Data<u8>),
+    PortB(u8),
+    PortA(u8),
     CycleCount(usize),
     LcdScreen(String),
     Paused,
@@ -308,21 +308,20 @@ impl EmulatorGui {
             },
             Err(TryRecvError::Empty) => break,
             Ok(msg) => match msg {
-                ToGuiMessage::PortB(port_b_data) => {
-                    let mut data = port_b_data.data;
-                    let port_b_lbl_text = 
-                        if port_b_data.is_garbage { String::from("Port B: garbage") } 
-                        else { format!("Port B: {:#04x} ({})", data, data) };
-                    self.port_b_lbl.set_text(&port_b_lbl_text);
+                ToGuiMessage::PortB(mut port_b_data) => {
+                    self.port_b_lbl.set_text(&format!("Port B: {:#04x} ({})",
+                        &port_b_data,
+                        &port_b_data
+                    ));
 
                     let mut bitmaps = vec![];
                     for _i in 0..8 {
-                        if data & 0b0000_0001 == 0 {
+                        if port_b_data & 0b0000_0001 == 0 {
                             bitmaps.push(Some(&self.led_off_bmp));
                         } else {
                             bitmaps.push(Some(&self.led_on_bmp));
                         }
-                        data >>= 1;
+                        port_b_data >>= 1;
                     }
                     self.led7b.set_bitmap(bitmaps.pop().unwrap());
                     self.led6b.set_bitmap(bitmaps.pop().unwrap());
@@ -333,21 +332,20 @@ impl EmulatorGui {
                     self.led1b.set_bitmap(bitmaps.pop().unwrap());
                     self.led0b.set_bitmap(bitmaps.pop().unwrap());
                 },
-                ToGuiMessage::PortA(port_a_data) => {
-                    let mut data = port_a_data.data;
-                    let port_a_lbl_txt = 
-                        if port_a_data.is_garbage { String::from("Port A: garbage") } 
-                        else { format!("Port A: {:#04x} ({})", data, data) };
-                    self.port_a_lbl.set_text(&port_a_lbl_txt);
+                ToGuiMessage::PortA(mut port_a_data) => {
+                    self.port_a_lbl.set_text(&format!("Port A: {:#04x} ({})",
+                        &port_a_data,
+                        &port_a_data
+                    ));
 
                     let mut bitmaps = vec![];
                     for _i in 0..8 {
-                        if data & 0b0000_0001 == 0 {
+                        if port_a_data & 0b0000_0001 == 0 {
                             bitmaps.push(Some(&self.led_off_bmp));
                         } else {
                             bitmaps.push(Some(&self.led_on_bmp));
                         }
-                        data >>= 1;
+                        port_a_data >>= 1;
                     }
                     self.led7a.set_bitmap(bitmaps.pop().unwrap());
                     self.led6a.set_bitmap(bitmaps.pop().unwrap());

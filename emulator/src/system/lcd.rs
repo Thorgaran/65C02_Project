@@ -22,15 +22,20 @@ const FONT_TABLE: [char; 256] = [
 ];
 
 pub enum SysToLcdMessage {
-    PinChange(LCDPins),
-    AllowGuiUpdate,
-    ForceGuiUpdate,
+    RegisterPinChange(bool),
+    ReadWritePinChange(bool),
+    EnablePinChange(bool),
+    // u8 is the data bit position, with 0 <= u8 <= 7, and bool is the electric level
+    DataPinChange((u8, bool)),
+    AllowOneUpdate,
+    AllowAllUpdates,
     Exit,
 }
 
 pub struct LCDPins {
     pub rs: bool,
     pub rw: bool,
+    pub e: bool,
     pub data: u8,
 }
 
@@ -76,8 +81,8 @@ pub struct LCD {
     ddram_data: [u8; 0x80],
     ddram_addr: u8,
     config: LCDConfig,
-    waiting_for_more_data: bool,
-    gui_update_allowed: bool,
+    waiting_for_lower_half: bool,
+    gui_update_allowed: Option<bool>,
     tx_log_msgs: Sender<LogMessage>,
     tx_to_gui: Sender<ToGuiMessage>,
 }
@@ -91,6 +96,7 @@ impl LCD {
             pins: LCDPins {
                 rs: false,
                 rw: false,
+                e: false,
                 data: 0b0000_0000,
             },
             screen: String::new(),
@@ -110,8 +116,8 @@ impl LCD {
                 shift_dir: ShiftDir::Right,
                 display_behavior: DisplayBehavior::MoveCursor,
             },
-            waiting_for_more_data: false,
-            gui_update_allowed: true,
+            waiting_for_lower_half: false,
+            gui_update_allowed: None,
             tx_log_msgs,
             tx_to_gui,
         };
@@ -147,34 +153,45 @@ impl LCD {
                 'read_sys_msgs: loop { match rx_sys_msgs.try_recv() {
                     Err(TryRecvError::Disconnected) => panic!("SYS thread has hung up"),
                     Err(TryRecvError::Empty) => break 'read_sys_msgs,
-                    Ok(SysToLcdMessage::PinChange(lcd_pins)) => {
-                        if self.waiting_for_more_data {
-                            self.pins = lcd_pins;
-                            self.waiting_for_more_data = false;
-                        } else {
-                            if self.config.data_length == DataLength::Four {
-                                self.pins.data |= lcd_pins.data >> 4;
-                                if self.pins.rs != lcd_pins.rs
-                                    || self.pins.rw != lcd_pins.rw
-                                {
-                                    panic!("Control pins difference between the two data halves");
+                    Ok(SysToLcdMessage::DataPinChange((bit, level))) => {
+                        self.pins.data = match (self.waiting_for_lower_half, level) {
+                            (false, true) => self.pins.data | (1 << bit),
+                            (false, false) => self.pins.data & !(1 << bit),
+                            (true, true) => self.pins.data | (1 << (bit - 4)),
+                            (true, false) => self.pins.data & !(1 << (bit - 4)),
+                        };
+                    },
+                    Ok(SysToLcdMessage::RegisterPinChange(level)) => self.pins.rs = level,
+                    Ok(SysToLcdMessage::ReadWritePinChange(level)) => self.pins.rw = level,
+                    Ok(SysToLcdMessage::EnablePinChange(level)) => {
+                        match (self.pins.e, level) {
+                            (false, true) => {
+                                self.pins.e = level;
+
+                                match (&self.config.data_length, self.waiting_for_lower_half) {
+                                    (DataLength::Four, false) => self.waiting_for_lower_half = true,
+                                    (DataLength::Four, true) => {
+                                        self.waiting_for_lower_half = false;
+                                        self.read_pins();
+                                    },
+                                    (DataLength::Eigth, _) => self.read_pins(),
                                 }
-                                self.waiting_for_more_data = true;
-                            } else {
-                                self.pins = lcd_pins;
-                            }
-                            // println!("DATA: {:#010b}, LCD STATE: {:?}", self.pins.data, self);
-                            self.read_pins();
+                            },
+                            (true, false) => self.pins.e = level,
+                            (_, _) => {},
                         }
+                    }
+                    Ok(SysToLcdMessage::AllowOneUpdate) => self.gui_update_allowed = Some(true),
+                    Ok(SysToLcdMessage::AllowAllUpdates) => {
+                        self.gui_update_allowed = None;
+
+                        self.send_screen_to_gui();
                     },
-                    Ok(SysToLcdMessage::AllowGuiUpdate) => self.gui_update_allowed = true,
-                    Ok(SysToLcdMessage::ForceGuiUpdate) => {
-                        if self.config.display_state == DisplayState::On {
-                            self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
-                            .expect("GUI thread has hung up");
-                        }
+                    Ok(SysToLcdMessage::Exit) => {
+                        self.send_screen_to_gui();
+                        
+                        break 'lcd_thread_main
                     },
-                    Ok(SysToLcdMessage::Exit) => break 'lcd_thread_main,
                 }};
             }
         }).unwrap()
@@ -238,11 +255,20 @@ impl LCD {
         if self.config.display_state == DisplayState::On {
             log!(self.tx_log_msgs, "\n{}", self.screen);
         
-            if self.gui_update_allowed {
-                self.gui_update_allowed = false;
-                self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
-                    .expect("GUI thread has hung up");
+            
+            if self.gui_update_allowed != Some(false) {
+                if self.gui_update_allowed == Some(true) {
+                    self.gui_update_allowed = Some(false);
+                }
+                self.send_screen_to_gui();
             }
+        }
+    }
+
+    fn send_screen_to_gui(&self) {
+        if self.config.display_state == DisplayState::On {
+            self.tx_to_gui.send(ToGuiMessage::LcdScreen(self.screen.clone()))
+                .expect("GUI thread has hung up");
         }
     }
     
@@ -354,7 +380,7 @@ impl LCD {
                 2 => {
                     let mut fully_valid_data = true;
                     self.config.data_length = if self.pins.data & 0b0001_0000 == 0 {
-                        self.waiting_for_more_data = true;
+                        self.waiting_for_lower_half = false;
                         if self.config.data_length == DataLength::Eigth {
                             fully_valid_data = false;
                         }
